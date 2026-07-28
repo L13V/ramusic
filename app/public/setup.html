@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
+<title>Set up · TV Jam</title>
+<style>
+:root{
+  --accent:#1db954;
+  --bg:#0c0e10;
+  --card:#16191d;
+  --brd:rgba(255,255,255,.09);
+  --fg:#fff;
+  --dim:rgba(255,255,255,.6);
+  --faint:rgba(255,255,255,.36);
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{
+  background:var(--bg);color:var(--fg);
+  font-family:"Inter","Segoe UI",system-ui,-apple-system,sans-serif;
+  -webkit-font-smoothing:antialiased;
+  padding:22px 18px calc(40px + env(safe-area-inset-bottom));
+  max-width:520px;margin:0 auto;
+}
+h1{font-size:22px;font-weight:800;letter-spacing:-.01em;display:flex;align-items:center;gap:10px}
+h1 .dot{width:10px;height:10px;border-radius:50%;background:var(--accent);box-shadow:0 0 14px var(--accent)}
+.sub{color:var(--dim);font-size:14px;margin:6px 0 22px;line-height:1.45}
+
+.banner{border-radius:14px;padding:12px 14px;font-size:14px;margin-bottom:16px;display:none;line-height:1.4}
+.banner.err{display:block;background:rgba(255,90,90,.12);border:1px solid rgba(255,90,90,.35);color:#ff9a9a}
+.banner.okb{display:block;background:rgba(29,185,84,.12);border:1px solid rgba(29,185,84,.4);color:#7fe0a7}
+
+.step{background:var(--card);border:1px solid var(--brd);border-radius:18px;padding:18px;margin-bottom:14px}
+.step.done{border-color:rgba(29,185,84,.45)}
+.step-head{display:flex;align-items:center;gap:12px;margin-bottom:10px}
+.badge{
+  width:28px;height:28px;border-radius:50%;flex:0 0 auto;
+  display:grid;place-items:center;font-size:13px;font-weight:800;
+  background:rgba(255,255,255,.08);color:var(--dim);
+}
+.step.done .badge{background:var(--accent);color:#04240f}
+.step-title{font-size:15px;font-weight:700}
+.step-opt{font-size:11px;color:var(--faint);font-weight:600;letter-spacing:.08em;margin-left:auto}
+.step p{font-size:13px;color:var(--dim);line-height:1.5;margin-bottom:12px}
+.step p b{color:var(--fg);font-weight:600}
+.step a{color:var(--accent)}
+
+label{display:block;font-size:11px;font-weight:700;letter-spacing:.1em;color:var(--faint);margin:12px 0 6px;text-transform:uppercase}
+input{
+  width:100%;background:#0b0d0f;border:1px solid var(--brd);border-radius:12px;
+  color:var(--fg);font-size:15px;padding:12px 13px;outline:none;
+  font-family:ui-monospace,Menlo,Consolas,monospace;
+}
+input:focus{border-color:var(--accent)}
+
+.uri{
+  display:flex;align-items:center;gap:8px;background:#0b0d0f;border:1px solid var(--brd);
+  border-radius:12px;padding:9px 8px 9px 13px;margin-top:8px;
+}
+.uri code{
+  flex:1 1 auto;min-width:0;font-size:12px;color:var(--dim);
+  overflow-x:auto;white-space:nowrap;font-family:ui-monospace,Menlo,Consolas,monospace;
+  -webkit-overflow-scrolling:touch;scrollbar-width:none;
+}
+.uri code::-webkit-scrollbar{display:none}
+.copy{
+  flex:0 0 auto;background:rgba(255,255,255,.08);border:0;border-radius:9px;
+  color:var(--fg);font-size:12px;font-weight:600;padding:7px 12px;cursor:pointer;
+}
+.copy:active{background:rgba(255,255,255,.2)}
+
+.btn{
+  display:flex;align-items:center;justify-content:center;gap:10px;width:100%;
+  border:0;border-radius:999px;padding:14px;font-size:15px;font-weight:700;
+  cursor:pointer;margin-top:14px;text-decoration:none;
+}
+.btn.primary{background:var(--accent);color:#04240f}
+.btn.primary:active{filter:brightness(1.1)}
+.btn.ghost{background:rgba(255,255,255,.08);color:var(--fg)}
+.btn[disabled]{opacity:.4;pointer-events:none}
+.btn svg{flex:0 0 auto}
+
+.connected{display:none;text-align:center;padding:26px 18px}
+.connected .avatar{
+  width:74px;height:74px;border-radius:50%;object-fit:cover;margin:0 auto 12px;
+  display:block;background:linear-gradient(135deg,var(--accent),#0e7a34);
+}
+.connected .avatar.ph{display:grid;place-items:center;font-size:30px;font-weight:800;color:#04240f}
+.connected h2{font-size:19px;font-weight:800}
+.connected p{color:var(--dim);font-size:14px;margin-top:6px;line-height:1.5}
+.disconnect{background:none;border:0;color:var(--faint);font-size:13px;margin-top:18px;cursor:pointer;text-decoration:underline}
+
+details{margin-top:10px}
+summary{font-size:13px;color:var(--dim);cursor:pointer;font-weight:600}
+details[open] summary{margin-bottom:8px}
+.hint{font-size:12px;color:var(--faint);line-height:1.55;margin-top:10px}
+.save-note{font-size:12px;color:var(--accent);margin-top:8px;min-height:1.2em}
+</style>
+</head>
+<body>
+  <h1><span class="dot"></span> TV Jam setup</h1>
+  <div class="sub">Connect the dashboard to Spotify. You only do this once — tokens are stored on the server, nothing to copy by hand.</div>
+
+  <div id="banner" class="banner"></div>
+
+  <!-- OTP gate: shown when this device must enter the code displayed on the TV -->
+  <div class="step" id="otp-gate" style="display:none">
+    <div class="step-head"><div class="badge">🔒</div><div class="step-title">Enter the code on the TV</div></div>
+    <p>For security, changing setup needs the <b>6-digit code shown on the TV screen</b> right now. (Anyone can view this page, but only someone who can see the TV can change things.)</p>
+    <input id="otp-input" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6-digit code" style="text-align:center;letter-spacing:.4em;font-size:22px"/>
+    <button class="btn primary" id="otp-submit" style="margin-top:12px">Unlock setup</button>
+    <div class="save-note" id="otp-note"></div>
+  </div>
+
+  <!-- Everything below is hidden until unlocked -->
+  <div id="setup-body">
+
+  <!-- Connected state -->
+  <div class="step connected" id="connected">
+    <img class="avatar" id="c-img" alt="" style="display:none"/>
+    <div class="avatar ph" id="c-ph" style="display:none">♪</div>
+    <h2 id="c-name">Connected</h2>
+    <p>You're signed in — the TV is live.<br/>You can close this page.</p>
+    <p class="hint" style="margin-top:12px">Playback on the TV (the "Play on this TV" button) needs Spotify <b>Premium</b>. Connected before this update and it won't play? Disconnect and reconnect to grant the new playback permission.</p>
+    <button class="disconnect" id="disconnect">Disconnect this account</button>
+  </div>
+
+  <!-- Step 1: app credentials -->
+  <div class="step" id="step1">
+    <div class="step-head"><div class="badge" id="b1">1</div><div class="step-title">Spotify app credentials</div></div>
+    <p>Create (or open) an app in the <a href="https://developer.spotify.com/dashboard" target="_blank" rel="noopener">Spotify Developer Dashboard</a>, add <b>this exact Redirect URI</b> to its settings, then paste its <b>Client ID</b> here.</p>
+    <div class="uri"><code id="uri-main"></code><button class="copy" data-copy="uri-main">Copy</button></div>
+    <div class="hint"><b>This URI never changes.</b> It's a fixed localhost address the sign-in uses on the TV, so you add it <b>once</b> and never touch it again — even after restarts. (Settings → Redirect URIs → Add → <b>Save</b>.)</div>
+    <label for="clientId">Client ID</label>
+    <input id="clientId" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="32-character client id"/>
+    <details>
+      <summary>Optional: Client Secret</summary>
+      <p style="margin-bottom:0">Not required — sign-in uses PKCE. Only fill this if you already use a secret.</p>
+      <label for="clientSecret">Client secret</label>
+      <input id="clientSecret" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="leave empty (recommended)"/>
+    </details>
+    <button class="btn ghost" id="saveCreds">Save</button>
+    <div class="save-note" id="credsNote"></div>
+  </div>
+
+  <!-- Step 2: one remote sign-in — does OAuth + Jam together -->
+  <div class="step" id="step2">
+    <div class="step-head"><div class="badge" id="b2">2</div><div class="step-title">Sign in with Spotify</div></div>
+    <p>Tap below to open a real Spotify login <b>on the TV</b> that you drive from your phone. Signing in once here grants dashboard access <b>and</b> enables Jam — both in one step. Nothing to copy, and the redirect URI stays fixed.</p>
+    <a class="btn primary" id="loginBtn" href="/remote">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.5 17.3a.75.75 0 0 1-1.03.25c-2.82-1.72-6.37-2.11-10.55-1.16a.75.75 0 1 1-.33-1.46c4.57-1.05 8.5-.6 11.66 1.34.35.22.46.68.25 1.03zm1.47-3.27a.94.94 0 0 1-1.29.31c-3.23-1.98-8.15-2.56-11.96-1.4a.94.94 0 1 1-.55-1.8c4.36-1.32 9.78-.68 13.49 1.6.44.27.58.85.31 1.29zm.13-3.41C15.24 8.32 8.84 8.11 5.15 9.23a1.13 1.13 0 1 1-.65-2.16c4.24-1.28 11.28-1.03 15.72 1.6a1.13 1.13 0 0 1-1.12 1.95z"/></svg>
+      Sign in with Spotify
+    </a>
+    <div class="hint">The login runs on the TV's own browser (real Spotify, real domain) — that's what keeps the redirect URI static and gets past Spotify's login checks. It only ever talks to your own machine.</div>
+  </div>
+
+  <!-- Step 3: Jam fallback (only if the one-step sign-in didn't grab it) -->
+  <div class="step" id="step3">
+    <div class="step-head"><div class="badge" id="b3">3</div><div class="step-title">Jam cookie</div><div class="step-opt">USUALLY AUTOMATIC</div></div>
+    <p>Step 2 normally enables Jam on its own. Only if this stays un-ticked, paste the <b>sp_dc</b> cookie manually from a desktop browser signed into <a href="https://open.spotify.com" target="_blank" rel="noopener">open.spotify.com</a> (DevTools → Application → Cookies).</p>
+    <details>
+      <summary>Paste sp_dc manually</summary>
+      <label for="spDc">sp_dc cookie</label>
+      <input id="spDc" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="AQB…"/>
+      <button class="btn ghost" id="saveSpDc">Save</button>
+      <div class="save-note" id="spDcNote"></div>
+    </details>
+  </div>
+
+  </div><!-- /setup-body -->
+
+<script>
+const $ = (id) => document.getElementById(id);
+let status = null;
+
+// ── OTP unlock token (kept for this tab only) ──
+let setupToken = sessionStorage.getItem('setupToken') || '';
+const authHeaders = (extra) => ({ ...(extra || {}), ...(setupToken ? { 'X-Setup-Token': setupToken } : {}) });
+let otpBegun = false;
+
+const qs = new URLSearchParams(location.search);
+if (qs.get('error')) {
+  const b = $('banner'); b.className = 'banner err';
+  b.textContent = 'Sign-in failed: ' + qs.get('error');
+} else if (qs.get('done')) {
+  const b = $('banner'); b.className = 'banner okb';
+  b.textContent = "✓ Signed in! The TV switches to the dashboard on its own.";
+}
+if (qs.get('error') || qs.get('done')) history.replaceState(null, '', '/setup');
+
+async function refresh(first) {
+  try {
+    const r = await fetch('/api/setup/status', { cache: 'no-store', headers: authHeaders() });
+    status = await r.json();
+  } catch { return; }
+  const s = status;
+
+  // OTP gate: if this device is locked, show the code prompt and hide the rest.
+  const locked = !!s.locked;
+  $('otp-gate').style.display = locked ? 'block' : 'none';
+  $('setup-body').style.display = locked ? 'none' : 'block';
+  if (locked && !otpBegun) {           // ask the server to flash a code on the TV
+    otpBegun = true;
+    fetch('/api/setup/otp/begin', { method: 'POST' }).catch(() => {});
+  }
+  if (locked) return;                  // don't paint the steps while locked
+
+  // The redirect URI to register is the STATIC loopback the remote sign-in uses;
+  // it never changes between restarts.
+  const loopback = (s.redirectUris || []).find((u) => u.includes('127.0.0.1'));
+  if (loopback) $('uri-main').textContent = loopback;
+
+  // step badges
+  setDone('step1', 'b1', s.hasClientId);
+  setDone('step2', 'b2', s.configured);
+  setDone('step3', 'b3', s.hasSpDc);
+  // The remote sign-in does OAuth itself, so it just needs the Client ID saved.
+  if (!s.hasClientId) $('loginBtn').setAttribute('disabled', ''); else $('loginBtn').removeAttribute('disabled');
+
+  // Dev-mode app: this account isn't on the app's allowlist, so playback +
+  // now-playing won't work until it's added. Make that loud and clear.
+  if (s.profile?.notRegistered) {
+    const b = $('banner'); b.className = 'banner err';
+    b.innerHTML = '⚠ <b>Your Spotify account isn\'t added to your app.</b> Playback & now-playing need it. ' +
+      'Open your app in the <a href="https://developer.spotify.com/dashboard" target="_blank" rel="noopener" style="color:inherit;text-decoration:underline">dashboard</a> → Settings → <b>User Management</b> → add your account\'s name + email → Save.';
+  }
+
+  // connected card
+  $('connected').style.display = s.configured ? 'block' : 'none';
+  if (s.configured) {
+    const name = s.profile?.notRegistered ? 'Spotify (needs allowlisting)' : (s.profile?.name || 'Spotify account');
+    $('c-name').textContent = 'Connected as ' + name;
+    if (s.profile?.image) {
+      $('c-img').src = s.profile.image; $('c-img').style.display = 'block'; $('c-ph').style.display = 'none';
+    } else {
+      $('c-img').style.display = 'none'; $('c-ph').style.display = 'grid';
+    }
+  }
+  if (first && s.hasClientId) $('clientId').placeholder = 'saved (' + s.clientIdPreview + ')';
+  if (first && s.hasSpDc) $('spDc').placeholder = 'saved ✓';
+}
+function setDone(stepId, badgeId, done) {
+  $(stepId).classList.toggle('done', !!done);
+  $(badgeId).textContent = done ? '✓' : badgeId.slice(1);
+}
+
+function wireCopy(btn) {
+  btn.addEventListener('click', async () => {
+    const txt = $(btn.dataset.copy).textContent;
+    try { await navigator.clipboard.writeText(txt); } catch {
+      const ta = document.createElement('textarea'); ta.value = txt;
+      document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove();
+    }
+    btn.textContent = '✓'; setTimeout(() => (btn.textContent = 'Copy'), 1200);
+  });
+}
+document.querySelectorAll('.copy').forEach(wireCopy);
+
+// uri-main is filled from /api/setup/status (the static loopback redirect URI).
+$('uri-main').textContent = 'http://127.0.0.1:3000/callback';
+
+async function post(url, body) {
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(body || {}),
+  });
+  return r.json();
+}
+
+// OTP unlock
+$('otp-submit').addEventListener('click', async () => {
+  const code = $('otp-input').value.trim();
+  if (!code) { $('otp-note').textContent = 'Enter the code from the TV.'; return; }
+  try {
+    const r = await fetch('/api/setup/otp/verify', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code }),
+    });
+    const j = await r.json();
+    if (j.ok && j.token) {
+      setupToken = j.token; sessionStorage.setItem('setupToken', j.token);
+      $('otp-note').textContent = '';
+      otpBegun = false;
+      refresh();
+    } else {
+      $('otp-note').textContent = j.error || 'Wrong code.';
+      $('otp-input').value = '';
+    }
+  } catch { $('otp-note').textContent = 'Network error.'; }
+});
+$('otp-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('otp-submit').click(); });
+
+$('saveCreds').addEventListener('click', async () => {
+  const body = {};
+  if ($('clientId').value.trim()) body.clientId = $('clientId').value.trim();
+  if ($('clientSecret').value.trim()) body.clientSecret = $('clientSecret').value.trim();
+  if (!Object.keys(body).length) { $('credsNote').textContent = 'Nothing to save yet.'; return; }
+  await post('/api/setup/creds', body);
+  $('credsNote').textContent = '✓ Saved';
+  setTimeout(() => ($('credsNote').textContent = ''), 2000);
+  refresh();
+});
+
+$('saveSpDc').addEventListener('click', async () => {
+  const v = $('spDc').value.trim();
+  if (!v) { $('spDcNote').textContent = 'Paste the cookie first.'; return; }
+  await post('/api/setup/creds', { spDc: v });
+  $('spDcNote').textContent = '✓ Saved — Jam features enabled';
+  refresh();
+});
+
+$('disconnect').addEventListener('click', async () => {
+  await post('/api/setup/disconnect');
+  refresh();
+});
+
+refresh(true);
+setInterval(refresh, 4000);
+</script>
+</body>
+</html>

@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Preview — Now Playing</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<style>
+/* ── spotify-tv-jam — TV dashboard ── */
+:root{
+  --accent:#1db954;
+  --fg:#ffffff;
+  --fg-dim:rgba(255,255,255,.62);
+  --fg-faint:rgba(255,255,255,.38);
+  --panel:rgba(255,255,255,.06);
+  --panel-brd:rgba(255,255,255,.10);
+  --radius:22px;
+  --shadow:0 30px 80px rgba(0,0,0,.55);
+}
+
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%;overflow:hidden;background:#000}
+body{
+  font-family:"Inter","SF Pro Display","Segoe UI",system-ui,-apple-system,sans-serif;
+  color:var(--fg);
+  -webkit-font-smoothing:antialiased;
+  letter-spacing:.2px;
+}
+
+/* Background = blurred, scaled album art with a slow drift */
+#bg{
+  position:fixed;inset:-8%;
+  background-size:cover;background-position:center;
+  filter:blur(60px) saturate(1.5) brightness(.7);
+  transform:scale(1.15);
+  transition:background-image .8s ease;
+  animation:drift 40s ease-in-out infinite alternate;
+  z-index:0;
+}
+@keyframes drift{from{transform:scale(1.15) translate(0,0)}to{transform:scale(1.22) translate(-2%,-2%)}}
+#bg-shade{
+  position:fixed;inset:0;z-index:1;
+  background:
+    radial-gradient(120% 90% at 20% 0%, rgba(0,0,0,.15), transparent 60%),
+    linear-gradient(180deg, rgba(0,0,0,.55) 0%, rgba(0,0,0,.35) 40%, rgba(0,0,0,.75) 100%);
+}
+
+#app{
+  position:relative;z-index:2;
+  height:100vh;
+  display:grid;
+  grid-template-rows:auto 1fr auto;
+  padding:clamp(24px,3vw,56px);
+  gap:clamp(18px,2.4vw,40px);
+}
+
+/* ── Top bar ── */
+#topbar{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;column-gap:16px}
+#topbar .clock{justify-self:start}
+#topbar .weather{justify-self:end}
+.clock #time{font-size:clamp(30px,3.6vw,64px);font-weight:800;line-height:1;font-variant-numeric:tabular-nums}
+.clock #date{font-size:clamp(13px,1.15vw,20px);color:var(--fg-dim);margin-top:6px;font-weight:500}
+.brand{
+  display:flex;align-items:center;gap:12px;
+  font-size:clamp(12px,1vw,18px);font-weight:700;letter-spacing:.32em;color:var(--fg-dim);
+}
+.brand .dot{width:11px;height:11px;border-radius:50%;background:var(--accent);
+  box-shadow:0 0 16px var(--accent);animation:pulse 2s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.55;transform:scale(.8)}}
+.weather{display:flex;align-items:center;gap:16px}
+.weather .w-ic{font-size:clamp(34px,3.4vw,58px);line-height:1}
+.weather #w-temp{font-size:clamp(26px,2.6vw,46px);font-weight:800;line-height:1;font-variant-numeric:tabular-nums}
+.weather #w-meta{font-size:clamp(12px,1vw,17px);color:var(--fg-dim);margin-top:5px;text-align:right}
+
+/* ── Main ── */
+#main{display:grid;grid-template-columns:1.15fr .85fr;gap:clamp(24px,3vw,56px);min-height:0}
+#main>*{min-width:0}
+
+/* Now playing */
+#now{display:grid;grid-template-rows:minmax(80px,1fr) auto;gap:clamp(20px,2.2vw,36px);min-height:0;overflow:hidden}
+#art-wrap{position:relative;aspect-ratio:1/1;height:100%;min-height:0;max-height:42vh;max-width:100%;
+  justify-self:start;align-self:end;overflow:hidden;border-radius:var(--radius)}
+#art{width:100%;height:100%;object-fit:cover;border-radius:var(--radius);box-shadow:var(--shadow);display:none}
+.empty-art{
+  width:100%;height:100%;border-radius:var(--radius);display:grid;place-items:center;
+  background:var(--panel);border:1px solid var(--panel-brd);font-size:12vh;color:var(--fg-faint);
+}
+#now-info{min-width:0}
+.eyebrow{font-size:clamp(11px,.95vw,15px);font-weight:700;letter-spacing:.3em;color:var(--accent);margin-bottom:12px}
+#track{font-size:clamp(30px,4vw,74px);font-weight:800;line-height:1.02;letter-spacing:-.01em;
+  overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+#artist{font-size:clamp(18px,1.9vw,34px);font-weight:500;color:var(--fg-dim);margin-top:10px;
+  overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+#scrub{height:6px;border-radius:6px;background:rgba(255,255,255,.16);margin-top:clamp(16px,2vw,30px);overflow:hidden}
+#scrub-fill{height:100%;width:0;background:var(--accent);border-radius:6px;transition:width 1s linear}
+#times{display:flex;justify-content:space-between;font-size:clamp(12px,1vw,16px);color:var(--fg-faint);margin-top:9px;font-variant-numeric:tabular-nums}
+.added{margin-top:14px;font-size:clamp(13px,1.1vw,18px);color:var(--fg-dim);min-height:1.2em}
+.added b{color:var(--fg);font-weight:600}
+
+/* Queue */
+#queue-wrap{background:var(--panel);border:1px solid var(--panel-brd);border-radius:var(--radius);
+  padding:clamp(18px,1.8vw,30px);display:flex;flex-direction:column;min-height:0;backdrop-filter:blur(20px)}
+.q-head{font-size:clamp(12px,1vw,17px);font-weight:700;letter-spacing:.28em;color:var(--fg-dim);margin-bottom:16px;flex:0 0 auto}
+.q-head #q-count{color:var(--fg-faint);margin-left:8px}
+#queue{list-style:none;overflow:hidden;flex:1 1 auto;display:flex;flex-direction:column;gap:clamp(8px,1vw,14px);
+  -webkit-mask-image:linear-gradient(to bottom,#000 calc(100% - 64px),transparent);
+  mask-image:linear-gradient(to bottom,#000 calc(100% - 64px),transparent)}
+#queue li{display:flex;align-items:center;gap:14px;animation:rise .4s ease both}
+@keyframes rise{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+#queue .q-art{width:clamp(42px,4vw,60px);height:clamp(42px,4vw,60px);border-radius:12px;object-fit:cover;flex:0 0 auto;background:rgba(255,255,255,.08)}
+#queue .q-txt{min-width:0;flex:1 1 auto}
+#queue .q-name{font-size:clamp(15px,1.25vw,21px);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#queue .q-art-name{font-size:clamp(12px,1vw,16px);color:var(--fg-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#queue .q-by{font-size:clamp(11px,.9vw,14px);color:var(--accent);font-weight:600;flex:0 0 auto;
+  display:flex;align-items:center;gap:6px;max-width:26%}
+#queue .q-by .av{width:22px;height:22px;border-radius:50%;object-fit:cover;background:var(--accent)}
+.q-empty{color:var(--fg-faint);font-size:clamp(14px,1.1vw,18px);text-align:center;margin:auto 0;display:none}
+
+/* ── Jam footer ── */
+#jam{display:flex;align-items:center;gap:clamp(20px,2.4vw,40px);
+  background:var(--panel);border:1px solid var(--panel-brd);border-radius:var(--radius);
+  padding:clamp(16px,1.6vw,26px) clamp(20px,2.2vw,34px);backdrop-filter:blur(20px)}
+#jam-info{flex:1 1 auto;min-width:0}
+#qr-box{position:relative;width:clamp(92px,10vw,140px);height:clamp(92px,10vw,140px);
+  background:#fff;border-radius:16px;padding:8px;flex:0 0 auto;box-shadow:var(--shadow)}
+#qr{width:100%;height:100%;display:none;image-rendering:pixelated}
+#qr-empty{position:absolute;inset:0;display:grid;place-items:center;color:#111;font-size:12px;font-weight:600;text-align:center;padding:8px}
+.jam-title{font-size:clamp(18px,2vw,34px);font-weight:800;letter-spacing:.02em}
+.jam-sub{font-size:clamp(13px,1.15vw,20px);color:var(--fg-dim);margin-top:6px}
+#members{display:flex;align-items:center;gap:10px;margin-top:14px;flex-wrap:wrap;
+  max-height:calc(2 * 36px + 10px);overflow:hidden}
+#members .m{display:flex;align-items:center;gap:8px;background:rgba(255,255,255,.08);
+  border-radius:999px;padding:5px 12px 5px 5px;font-size:clamp(12px,1vw,16px)}
+#members .m img,#members .m .m-av{width:26px;height:26px;border-radius:50%;object-fit:cover;
+  background:linear-gradient(135deg,var(--accent),#0e7a34);display:grid;place-items:center;font-size:12px;font-weight:700}
+#members .m.owner{border:1px solid var(--accent)}
+
+#err{position:fixed;bottom:10px;left:10px;z-index:9;color:#ff6b6b;font-size:12px;opacity:.8;font-family:monospace}
+
+/* Portrait TVs / narrow */
+@media (max-aspect-ratio:1/1){
+  #main{grid-template-columns:1fr;grid-template-rows:auto 1fr}
+  #art-wrap{max-height:30vh}
+}
+#qr-holder{width:100%;height:100%}
+#qr-holder img,#qr-holder canvas{width:100%!important;height:100%!important;display:block}
+</style>
+</head>
+<body>
+  <!-- Blurred album art fills the whole screen behind everything -->
+  <div id="bg"></div>
+  <div id="bg-shade"></div>
+
+  <div id="app">
+    <!-- ── Top bar: clock / date / weather ── -->
+    <header id="topbar">
+      <div class="clock">
+        <div id="time">--:--</div>
+        <div id="date">—</div>
+      </div>
+      <div class="brand"><span class="dot"></span> LISTENING PARTY</div>
+      <div class="weather" id="weather">
+        <div class="w-ic" id="w-ic">🌡️</div>
+        <div class="w-main">
+          <div id="w-temp">--°</div>
+          <div id="w-meta">—</div>
+        </div>
+      </div>
+    </header>
+
+    <!-- ── Main: now playing + queue ── -->
+    <main id="main">
+      <section id="now">
+        <div id="art-wrap">
+          <img id="art" alt="" />
+          <div id="art-empty" class="empty-art">♪</div>
+        </div>
+        <div id="now-info">
+          <div class="eyebrow" id="now-status">NOW PLAYING</div>
+          <h1 id="track">Nothing playing</h1>
+          <h2 id="artist">Start the music on Spotify</h2>
+          <div id="scrub"><div id="scrub-fill"></div></div>
+          <div id="times"><span id="t-cur">0:00</span><span id="t-dur">0:00</span></div>
+          <div id="now-added" class="added"></div>
+        </div>
+      </section>
+
+      <section id="queue-wrap">
+        <div class="q-head">UP NEXT <span id="q-count"></span></div>
+        <ul id="queue"></ul>
+        <div id="queue-empty" class="q-empty">Queue is empty — scan the QR below to add a song</div>
+      </section>
+    </main>
+
+    <!-- ── Footer: Jam QR + members ── -->
+    <footer id="jam">
+      <div id="qr-box">
+        <img id="qr" alt="Scan to join the Jam" />
+        <div id="qr-empty">No active Jam</div>
+      </div>
+      <div id="jam-info">
+        <div class="jam-title">SCAN TO JOIN THE JAM</div>
+        <div class="jam-sub" id="jam-sub">Add songs to the queue from your phone</div>
+        <div id="members"></div>
+      </div>
+    </footer>
+  </div>
+
+  <div id="err"></div>
+<script>
+// ---- inline demo data (mirrors lib/demo.js) ----
+const IMG=(s)=>`https://picsum.photos/seed/${s}/600/600`;
+const AV=(s)=>`https://i.pravatar.cc/80?img=${s}`;
+const DUR=214000; const start=Date.now();
+function demoState(){const p=(Date.now()-start)%DUR;return{
+ isPlaying:true,progressMs:p,
+ nowPlaying:{id:'d1',name:'Midnight City',artists:'M83',image:IMG('midnight'),durationMs:DUR,uri:'u0',addedBy:'Alex'},
+ queue:[
+  {id:'q1',name:'Instant Crush',artists:'Daft Punk, Julian Casablancas',image:IMG('daft'),addedBy:'Sam'},
+  {id:'q2',name:'The Less I Know The Better',artists:'Tame Impala',image:IMG('tame'),addedBy:'Jordan'},
+  {id:'q3',name:'Redbone',artists:'Childish Gambino',image:IMG('redbone'),addedBy:'Alex'},
+  {id:'q4',name:'Electric Feel',artists:'MGMT',image:IMG('mgmt'),addedBy:'Priya'},
+  {id:'q5',name:'Dreams',artists:'Fleetwood Mac',image:IMG('dreams'),addedBy:'Sam'},
+  {id:'q6',name:'Passionfruit',artists:'Drake',image:IMG('pf'),addedBy:null}],
+ jam:{active:true,joinUrl:'https://open.spotify.com/socialsession/DEMOtoken1234567890',usingFallback:false,
+  members:[{name:'Alex',image:AV(12),isOwner:true},{name:'Sam',image:AV(5)},{name:'Jordan',image:AV(33)},{name:'Priya',image:AV(45)}]}
+};}
+const demoWeather={city:'San Francisco, California',temp:64,feels:62,hi:69,lo:55,label:'Partly cloudy',icon:'⛅',unit:'F'};
+// public/app.js — polls /api/state and paints the TV.
+const $ = (id) => document.getElementById(id);
+let cfg = { clock24h: false, refreshMs: 5000 };
+let lastArt = null, lastTrackId = null, lastQueueSig = '';
+
+// ── Clock ticks locally every second (no network) ──
+function tickClock() {
+  const now = new Date();
+  let h = now.getHours();
+  const m = String(now.getMinutes()).padStart(2, '0');
+  let suffix = '';
+  if (!cfg.clock24h) { suffix = h >= 12 ? ' PM' : ' AM'; h = h % 12 || 12; }
+  $('time').textContent = `${cfg.clock24h ? String(h).padStart(2,'0') : h}:${m}${suffix}`;
+  $('date').textContent = now.toLocaleDateString(undefined,
+    { weekday: 'long', month: 'long', day: 'numeric' });
+}
+setInterval(tickClock, 1000);
+tickClock();
+
+const fmt = (ms) => {
+  const s = Math.floor((ms || 0) / 1000);
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+};
+const initials = (name) => (name || '?').trim().slice(0, 1).toUpperCase();
+
+function paintWeather(w) {
+  if (!w || w.error) { $('w-temp').textContent = '--°'; $('w-meta').textContent = w?.error ? '' : '—'; return; }
+  $('w-ic').textContent = w.icon;
+  $('w-temp').textContent = `${w.temp}°${w.unit}`;
+  $('w-meta').innerHTML = `${w.label}<br>${w.city} · H${w.hi}° L${w.lo}°`;
+}
+
+function paintNow(s) {
+  const t = s.nowPlaying;
+  const art = $('art'), empty = $('art-empty');
+  if (!t) {
+    $('track').textContent = 'Nothing playing';
+    $('artist').textContent = 'Start the music on Spotify';
+    $('now-status').textContent = 'PAUSED';
+    art.style.display = 'none'; empty.style.display = 'grid';
+    $('scrub-fill').style.width = '0%';
+    $('t-cur').textContent = '0:00'; $('t-dur').textContent = '0:00';
+    $('now-added').innerHTML = '';
+    return;
+  }
+  $('now-status').textContent = s.isPlaying ? 'NOW PLAYING' : 'PAUSED';
+  $('track').textContent = t.name;
+  $('artist').textContent = t.artists;
+  if (t.image && t.image !== lastArt) {
+    art.src = t.image; art.style.display = 'block'; empty.style.display = 'none';
+    $('bg').style.backgroundImage = `url("${t.image}")`;
+    lastArt = t.image;
+  } else if (!t.image) { art.style.display = 'none'; empty.style.display = 'grid'; }
+  const pct = t.durationMs ? Math.min(100, (s.progressMs / t.durationMs) * 100) : 0;
+  $('scrub-fill').style.width = pct + '%';
+  $('t-cur').textContent = fmt(s.progressMs);
+  $('t-dur').textContent = fmt(t.durationMs);
+  $('now-added').innerHTML = t.addedBy ? `Added by <b>${escapeHtml(t.addedBy)}</b>` : '';
+  lastTrackId = t.id;
+}
+
+function paintQueue(q) {
+  const ul = $('queue'), empty = $('queue-empty');
+  $('q-count').textContent = q.length ? `· ${q.length}` : '';
+  const sig = q.map((t) => t.id).join(',');
+  if (sig === lastQueueSig) return;       // avoid re-animating on every poll
+  lastQueueSig = sig;
+  ul.innerHTML = '';
+  empty.style.display = q.length ? 'none' : 'block';
+  for (const t of q) {
+    const li = document.createElement('li');
+    const by = t.addedBy
+      ? `<div class="q-by"><span class="av" style="display:grid;place-items:center;font-size:11px;font-weight:700">${initials(t.addedBy)}</span>${escapeHtml(t.addedBy)}</div>`
+      : '';
+    li.innerHTML = `
+      <img class="q-art" src="${t.image || ''}" alt="" onerror="this.style.visibility='hidden'"/>
+      <div class="q-txt">
+        <div class="q-name">${escapeHtml(t.name)}</div>
+        <div class="q-art-name">${escapeHtml(t.artists)}</div>
+      </div>${by}`;
+    ul.appendChild(li);
+  }
+}
+
+function paintJam(j) {
+  const qr = $('qr'), qe = $('qr-empty');
+  if (j.qr) { qr.src = j.qr; qr.style.display = 'block'; qe.style.display = 'none'; }
+  else { qr.style.display = 'none'; qe.style.display = 'grid'; }
+  $('jam-sub').textContent = j.active
+    ? (j.usingFallback ? 'Add songs to the queue from your phone' : 'Add songs to the queue from your phone')
+    : 'Start a Jam on your phone to activate';
+  const mem = $('members');
+  mem.innerHTML = '';
+  for (const m of j.members || []) {
+    const el = document.createElement('div');
+    el.className = 'm' + (m.isOwner ? ' owner' : '');
+    const av = m.image
+      ? `<img src="${m.image}" alt=""/>`
+      : `<span class="m-av">${initials(m.name)}</span>`;
+    el.innerHTML = `${av}<span>${escapeHtml(m.name)}</span>`;
+    mem.appendChild(el);
+  }
+}
+
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// ---- preview loop: no network, uses demo data ----
+let _qr=null;
+function renderQR(url){
+  const box=document.getElementById('qr-box');
+  const img=document.getElementById('qr'), empty=document.getElementById('qr-empty');
+  empty.style.display='none';
+  if(_qr){ return; }
+  const holder=document.createElement('div'); holder.id='qr-holder';
+  holder.style.cssText='width:100%;height:100%';
+  img.replaceWith(holder);
+  _qr=new QRCode(holder,{text:url,width:256,height:256,correctLevel:QRCode.CorrectLevel.M});
+}
+function loop(){
+  const d=demoState();
+  paintWeather(demoWeather);
+  paintNow(d);
+  paintQueue(d.queue);
+  // members + sub text (reuse paintJam minus qr img handling)
+  document.getElementById('jam-sub').textContent='Add songs to the queue from your phone';
+  const mem=document.getElementById('members'); mem.innerHTML='';
+  for(const m of d.jam.members){const el=document.createElement('div');el.className='m'+(m.isOwner?' owner':'');
+    el.innerHTML=(m.image?`<img src="${m.image}" alt=""/>`:`<span class="m-av">${initials(m.name)}</span>`)+`<span>${escapeHtml(m.name)}</span>`;
+    mem.appendChild(el);}
+  renderQR(d.jam.joinUrl);
+  setTimeout(loop,1000);
+}
+loop();
+</script></body></html>

@@ -1,0 +1,19 @@
+{
+  "name": "spotify-tv-jam",
+  "version": "1.0.0",
+  "description": "Full-screen Spotify TV dashboard: now playing, live queue with contributors, auto Jam QR code, clock and weather.",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "qrcode": "^1.5.3",
+    "selfsigned": "^5.5.0"
+  }
+}

@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Now Playing</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- Blurred album art fills the whole screen behind everything -->
+  <div id="bg"></div>
+  <div id="bg-shade"></div>
+
+  <!-- Setup code: appears while someone has the setup page open. They must type
+       this (shown only here on the TV) to change anything. -->
+  <div id="otp-overlay" hidden>
+    <div class="otp-card">
+      <div class="otp-eyebrow">🔒 SETUP CODE</div>
+      <div class="otp-code" id="otp-code">------</div>
+      <div class="otp-sub">Type this on the setup page to make changes</div>
+    </div>
+  </div>
+
+  <div id="app">
+    <!-- ── Top bar: clock / date / weather ── -->
+    <header id="topbar">
+      <div class="clock">
+        <div id="time">--:--</div>
+        <div id="date">—</div>
+      </div>
+      <div class="brand">
+        <img id="brand-logo" class="brand-logo" src="/ramtech-logo.png" alt="RAMTECH"
+             onerror="this.style.display='none';document.getElementById('brand-text').style.display='inline-flex'"/>
+        <span id="brand-text" class="brand-text"><span class="dot"></span> RAMTECH</span>
+        <span id="tv-device" class="tv-device" style="display:none"></span>
+      </div>
+      <div class="weather" id="weather">
+        <div class="w-ic" id="w-ic">🌡️</div>
+        <div class="w-main">
+          <div id="w-temp">--°</div>
+          <div id="w-meta">—</div>
+        </div>
+      </div>
+    </header>
+
+    <!-- ── Main: now playing + queue ── -->
+    <main id="main">
+      <section id="now">
+        <div id="art-wrap">
+          <img id="art" alt="" />
+          <div id="art-empty" class="empty-art">♪</div>
+        </div>
+        <div id="now-info">
+          <div class="eyebrow" id="now-status">NOW PLAYING</div>
+          <h1 id="track">Nothing playing</h1>
+          <h2 id="artist">Start the music on Spotify</h2>
+          <div id="scrub"><div id="scrub-fill"></div></div>
+          <div id="times"><span id="t-cur">0:00</span><span id="t-dur">0:00</span></div>
+          <div id="vol" class="vol" hidden>
+            <button class="vol-btn" id="vol-down" aria-label="Volume down">‹</button>
+            <span class="vol-ic">🔊</span>
+            <input id="vol-range" class="vol-range" type="range" min="0" max="100" value="80" aria-label="Volume"/>
+            <button class="vol-btn" id="vol-up" aria-label="Volume up">›</button>
+            <span class="vol-val" id="vol-val">80%</span>
+          </div>
+          <div id="now-added" class="added"></div>
+        </div>
+      </section>
+
+      <section id="queue-wrap">
+        <div class="q-head">UP NEXT <span id="q-count"></span></div>
+        <ul id="queue"></ul>
+        <div id="queue-empty" class="q-empty">Queue is empty — scan the QR below to add a song</div>
+      </section>
+    </main>
+
+    <!-- ── Footer: Jam QR + members ── -->
+    <footer id="jam">
+      <div id="qr-box">
+        <img id="qr" alt="Scan to join the Jam" />
+        <div id="qr-empty">No active Jam</div>
+      </div>
+      <div id="jam-info">
+        <div class="jam-title">SCAN TO JOIN THE JAM</div>
+        <div class="jam-sub" id="jam-sub">Add songs to the queue from your phone</div>
+        <div id="members"></div>
+      </div>
+    </footer>
+  </div>
+
+  <!-- ── First-run overlay: scan with a phone to sign into Spotify ── -->
+  <div id="setup-overlay" hidden>
+    <div class="su-card">
+      <div class="su-qr">
+        <img id="setup-qr" alt="Scan to set up" />
+        <div id="setup-qr-wait"><span class="spin"></span>Preparing your<br/>setup link…</div>
+      </div>
+      <div class="su-info">
+        <div class="su-eyebrow">FIRST-TIME SETUP</div>
+        <div class="su-title">Scan to set up</div>
+        <p class="su-text">
+          Point your phone camera at the code and sign in with Spotify.
+          This screen becomes your dashboard automatically.
+        </p>
+        <ol class="su-steps">
+          <li>Scan the QR with your phone</li>
+          <li>Follow the steps &amp; sign in with Spotify</li>
+          <li>Done — the party starts here</li>
+        </ol>
+        <div class="su-url" id="setup-url"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Web-player activate button (only shown when the TV can play + needs a tap) -->
+  <button id="tv-play" hidden>
+    <span class="tv-play-label">▶  Play on this TV</span>
+  </button>
+
+  <div id="err"></div>
+  <script src="app.js"></script>
+  <script src="player.js"></script>
+</body>
+</html>

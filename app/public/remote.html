@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
+<title>Sign in remotely · TV Jam</title>
+<style>
+:root{--accent:#1db954;--bg:#0c0e10;--card:#16191d;--brd:rgba(255,255,255,.09);--fg:#fff;--dim:rgba(255,255,255,.6)}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font-family:"Inter","Segoe UI",system-ui,sans-serif;-webkit-font-smoothing:antialiased;padding:16px 14px calc(20px + env(safe-area-inset-bottom));max-width:520px;margin:0 auto}
+h1{font-size:18px;font-weight:800;display:flex;align-items:center;gap:9px;margin-bottom:4px}
+h1 .dot{width:9px;height:9px;border-radius:50%;background:var(--accent);box-shadow:0 0 12px var(--accent)}
+.sub{color:var(--dim);font-size:13px;line-height:1.45;margin-bottom:12px}
+.screenwrap{position:relative;background:#000;border:1px solid var(--brd);border-radius:14px;overflow:hidden;aspect-ratio:420/760;display:grid;place-items:center}
+#screen{width:100%;height:100%;object-fit:contain;display:none;touch-action:none;-webkit-user-select:none;user-select:none}
+#placeholder{color:var(--dim);font-size:14px;text-align:center;padding:20px;line-height:1.5}
+.spinner{width:26px;height:26px;border:3px solid rgba(255,255,255,.2);border-top-color:var(--accent);border-radius:50%;animation:spin 1s linear infinite;margin:0 auto 12px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.kb{display:flex;gap:8px;margin-top:12px}
+.kb input{flex:1;background:#0b0d0f;border:1px solid var(--brd);border-radius:12px;color:var(--fg);font-size:16px;padding:12px 13px;outline:none}
+.kb input:focus{border-color:var(--accent)}
+.kb button{background:rgba(255,255,255,.08);border:0;border-radius:12px;color:var(--fg);font-size:14px;font-weight:700;padding:0 15px;cursor:pointer}
+.kb button.go{background:var(--accent);color:#04240f}
+.hint{font-size:12px;color:var(--dim);line-height:1.5;margin-top:10px}
+.done{display:none;text-align:center;padding:30px 16px}
+.done .big{font-size:52px}
+.done h2{font-size:19px;font-weight:800;margin:10px 0 6px}
+.done p{color:var(--dim);font-size:14px;line-height:1.5;margin-bottom:18px}
+.btn{display:inline-block;background:var(--accent);color:#04240f;font-weight:700;text-decoration:none;padding:12px 22px;border-radius:999px}
+.err{display:none;background:rgba(255,90,90,.12);border:1px solid rgba(255,90,90,.35);color:#ff9a9a;border-radius:12px;padding:12px 14px;font-size:13px;margin-top:12px;line-height:1.45}
+</style>
+</head>
+<body>
+  <h1><span class="dot"></span> Sign in to Spotify (remote)</h1>
+  <div class="sub">This drives a real Spotify login running on the TV/PC — so it passes Spotify's checks. Tap the fields on the screen below and type here; nothing is sent anywhere but your own PC.</div>
+
+  <div id="live">
+    <div class="screenwrap">
+      <img id="screen" alt="PC screen"/>
+      <div id="placeholder"><div class="spinner"></div>Waking the sign-in window on the PC…</div>
+    </div>
+    <div class="kb">
+      <input id="type" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="Tap a field above, then type here"/>
+      <button id="bksp" title="Backspace">⌫</button>
+      <button id="enter" class="go">Enter</button>
+    </div>
+    <div class="hint">Tap directly on the email / password boxes in the screen to focus them, then type. Swipe up/down on the screen to scroll. Enter submits.</div>
+    <div class="err" id="err"></div>
+  </div>
+
+  <div class="done" id="done">
+    <div class="big">✅</div>
+    <h2>Signed in</h2>
+    <p>All set — the dashboard is connected and Jam is enabled. The TV switches over on its own.</p>
+    <a class="btn" href="/setup">Back to setup</a>
+  </div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const screen = $('screen'), ph = $('placeholder');
+let started = false, doneFlag = false;
+
+const setupToken = sessionStorage.getItem('setupToken') || '';
+async function api(path, body) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (setupToken) headers['X-Setup-Token'] = setupToken;
+  const r = await fetch(path, { method: 'POST', headers, body: JSON.stringify(body || {}) });
+  return r.json().catch(() => ({}));
+}
+
+async function start() {
+  try {
+    const r = await api('/api/remote/start');
+    if (!r.ok) throw new Error(r.error || 'could not start');
+    started = true;
+    pumpFrames();
+    poll();
+  } catch (e) {
+    $('err').style.display = 'block';
+    $('err').textContent = 'Could not open the sign-in window on the PC: ' + e.message + ' — you can still paste sp_dc manually on the setup page.';
+  }
+}
+
+// Poll the latest frame as a JPEG blob (tunnel-safe, no SSE).
+async function pumpFrames() {
+  let lastUrl = null;
+  while (!doneFlag) {
+    try {
+      const r = await fetch('/api/remote/frame', { cache: 'no-store' });
+      if (r.status === 200) {
+        const blob = await r.blob();
+        const url = URL.createObjectURL(blob);
+        screen.src = url;
+        if (screen.style.display !== 'block') { screen.style.display = 'block'; ph.style.display = 'none'; }
+        if (lastUrl) URL.revokeObjectURL(lastUrl);
+        lastUrl = url;
+      }
+    } catch {}
+    await new Promise((r) => setTimeout(r, 300));
+  }
+  if (lastUrl) URL.revokeObjectURL(lastUrl);
+}
+
+// Tap -> click at normalized coords within the displayed image.
+function norm(e) {
+  const rect = screen.getBoundingClientRect();
+  const pt = e.touches ? e.touches[0] : e;
+  // account for object-fit:contain letterboxing
+  const iw = screen.naturalWidth, ih = screen.naturalHeight;
+  const scale = Math.min(rect.width / iw, rect.height / ih);
+  const dw = iw * scale, dh = ih * scale;
+  const ox = rect.left + (rect.width - dw) / 2, oy = rect.top + (rect.height - dh) / 2;
+  const nx = (pt.clientX - ox) / dw, ny = (pt.clientY - oy) / dh;
+  return { nx, ny };
+}
+screen.addEventListener('click', (e) => {
+  if (!started) return;
+  const { nx, ny } = norm(e);
+  if (nx < 0 || nx > 1 || ny < 0 || ny > 1) return;
+  api('/api/remote/input', { type: 'click', nx, ny });
+  $('type').focus();
+});
+
+// Swipe -> wheel scroll.
+let sy = null;
+screen.addEventListener('touchstart', (e) => { sy = e.touches[0].clientY; }, { passive: true });
+screen.addEventListener('touchmove', (e) => {
+  if (sy == null) return;
+  const y = e.touches[0].clientY, dy = sy - y;
+  if (Math.abs(dy) > 6) { api('/api/remote/input', { type: 'wheel', dy: dy * 2 }); sy = y; }
+}, { passive: true });
+screen.addEventListener('touchend', () => { sy = null; });
+
+// Keyboard box: stream added characters / backspaces.
+let last = '';
+const box = $('type');
+box.addEventListener('input', () => {
+  const v = box.value;
+  if (v.length > last.length) api('/api/remote/input', { type: 'text', text: v.slice(last.length) });
+  else if (v.length < last.length) api('/api/remote/input', { type: 'key', key: 'Backspace', n: last.length - v.length });
+  last = v;
+});
+$('bksp').addEventListener('click', () => { api('/api/remote/input', { type: 'key', key: 'Backspace' }); });
+$('enter').addEventListener('click', () => { api('/api/remote/input', { type: 'key', key: 'Enter' }); box.value = ''; last = ''; });
+
+async function poll() {
+  while (!doneFlag) {
+    try {
+      const r = await fetch('/api/remote/status', { cache: 'no-store' });
+      const s = await r.json();
+      if (s.status === 'captured') { doneFlag = true; $('live').style.display = 'none'; $('done').style.display = 'block'; break; }
+      if (!s.active && started) { // window closed without capture
+        $('err').style.display = 'block';
+        $('err').textContent = 'The sign-in window closed before finishing. Reload to try again, or paste sp_dc manually on setup.';
+        break;
+      }
+    } catch {}
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+}
+
+start();
+window.addEventListener('beforeunload', () => { navigator.sendBeacon && navigator.sendBeacon('/api/remote/stop'); });
+</script>
+</body>
+</html>
