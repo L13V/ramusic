@@ -490,9 +490,12 @@ app.post('/api/remote/stop', async (_req, res) => { await stopRemote(); res.json
 // Kick off the OAuth dance. The redirect URI is derived from whatever origin
 // the user opened the page on (phone https / desktop 127.0.0.1) so the
 // round-trip always comes back to the right listener.
+// Spotify rejects "localhost" redirect URIs (only the literal loopback IP is
+// allowed over http), so normalize it — the kiosk browses http://localhost.
 app.get('/login', (req, res) => {
   try {
-    const origin = `${req.protocol}://${req.get('host')}`;
+    const origin = `${req.protocol}://${req.get('host')}`
+      .replace(/^http:\/\/localhost(?=[:/]|$)/i, 'http://127.0.0.1');
     res.redirect(createLoginUrl(env, origin));
   } catch (e) {
     res.redirect('/setup?error=' + encodeURIComponent(e.message));
