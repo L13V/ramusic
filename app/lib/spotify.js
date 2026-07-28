@@ -72,7 +72,9 @@ function trackShape(t) {
 // "Sticky" Jam: once a session exists, keep serving its join URL for a while
 // even if a poll briefly can't see it (pause, device handoff, endpoint blip),
 // so the QR stays ready instead of flickering back to "no active Jam".
-let lastJam = { joinUrl: null, seen: 0 };
+// Members/contributors ride along in the sticky cache: a transient lookup blip
+// must NOT report "0 guests" (that pauses the music and flips the TV to idle).
+let lastJam = { joinUrl: null, seen: 0, members: [], contributors: {} };
 let jamIdleUntil = 0;
 const JAM_STICKY_MS = 10 * 60_000;
 const JAM_IDLE_MS = 12_000; // when idle, don't refire create more often than this
@@ -208,8 +210,13 @@ async function getJamUncached(env) {
   } catch (e) {
     out.error = e.message;
     if (debug) out.debug.tokenError = e.message;
-    // Keep the last good link alive through a transient token hiccup.
-    if (lastJam.joinUrl && Date.now() - lastJam.seen < JAM_STICKY_MS) out.joinUrl = lastJam.joinUrl;
+    // Keep the last good link AND members alive through a transient hiccup.
+    if (lastJam.joinUrl && Date.now() - lastJam.seen < JAM_STICKY_MS) {
+      out.joinUrl = lastJam.joinUrl;
+      out.members = lastJam.members;
+      out.contributors = lastJam.contributors;
+      out.stale = true;
+    }
     return out;
   }
   if (!tok) { out.error = 'no sp_dc web token'; return out; }
@@ -266,14 +273,19 @@ async function getJamUncached(env) {
     jamIdleUntil = Date.now() + JAM_IDLE_MS; // back off the create attempts a bit
     if (!out.error) out.error = 'no session (nothing playing, or Jam not available for this account/region)';
     if (debug) console.warn('[jam] no session —', JSON.stringify(out.debug.attempts));
-    // Fall back to the sticky link if it's fresh so pauses/handoffs don't blank the QR.
-    if (stickyFresh) out.joinUrl = lastJam.joinUrl;
+    // Fall back to the sticky link + members if fresh so pauses/handoffs don't
+    // blank the QR or masquerade as "all guests left".
+    if (stickyFresh) {
+      out.joinUrl = lastJam.joinUrl;
+      out.members = lastJam.members;
+      out.contributors = lastJam.contributors;
+      out.stale = true;
+    }
     return out;
   }
 
   out.joinUrl = pickJoinUrl(session);
   if (debug && !out.joinUrl) out.debug.sessionKeys = Object.keys(session);
-  if (out.joinUrl) lastJam = { joinUrl: out.joinUrl, seen: Date.now() };
 
   out.members = (session.session_members || []).map((m) => ({
     name: m.display_name || m.name || 'Guest',
@@ -302,6 +314,7 @@ async function getJamUncached(env) {
     }
   }
   if (debug) out.debug.queuedBy = queuedBy ? Object.keys(queuedBy).length : null;
+  if (out.joinUrl) lastJam = { joinUrl: out.joinUrl, seen: Date.now(), members: out.members, contributors: out.contributors };
   return out;
 }
 

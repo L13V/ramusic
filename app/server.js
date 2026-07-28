@@ -265,11 +265,15 @@ async function playerStatus() {
 // Idle unless a guest is in the Jam. Guest present -> the Pi's player is playing;
 // nobody but the owner -> the Pi is paused (idle). Scoped to the Pi's own device
 // so it never touches music playing on your phone/other speakers.
+let zeroGuestsSince = 0;              // debounce: a lookup blip must not pause
+const GUEST_GONE_GRACE_MS = 15_000;   // guests must be gone this long to pause
+
 async function manageJamPlayback(state) {
   if (isDemo() || !autoPlayOnGuest()) return;
   const guests = (state.jam?.members || []).filter((m) => !m.isOwner).length;
 
   if (guests > 0) {
+    zeroGuestsSince = 0;
     const dev = await resolvePlaybackDevice();
     if (!dev) return;
     const ps = await playerStatus();
@@ -278,7 +282,12 @@ async function manageJamPlayback(state) {
     return;
   }
 
-  // No guests -> enforce idle. Only act if something is actually playing.
+  // No guests visible. Session reads flake occasionally (and the member list
+  // rides a sticky cache) — require a sustained empty room before pausing.
+  if (!zeroGuestsSince) zeroGuestsSince = Date.now();
+  if (Date.now() - zeroGuestsSince < GUEST_GONE_GRACE_MS) return;
+
+  // Guests really gone -> enforce idle. Only act if something is playing.
   if (!state.isPlaying) { jamAuto.started = false; return; }
   const dev = await resolvePlaybackDevice();
   const ps = await playerStatus();
