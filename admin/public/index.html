@@ -1,0 +1,391 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RAMTECH · Device Manager</title>
+<style>
+:root{
+  --accent:#00aaff; --ok:#1db954; --warn:#f5a623; --bad:#ff4d4f;
+  --bg:#0b0e12; --panel:#141922; --panel2:#1b2230; --brd:rgba(255,255,255,.09);
+  --fg:#eef2f7; --dim:rgba(238,242,247,.6); --faint:rgba(238,242,247,.35);
+  --radius:14px;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font-family:"Inter","Segoe UI",system-ui,sans-serif;-webkit-font-smoothing:antialiased;min-height:100vh}
+button{font:inherit;cursor:pointer;border:0;border-radius:9px;padding:8px 14px;background:var(--panel2);color:var(--fg);transition:.15s}
+button:hover{filter:brightness(1.25)}
+button.primary{background:var(--accent);color:#00121c;font-weight:700}
+button.danger{background:rgba(255,77,79,.16);color:var(--bad)}
+button:disabled{opacity:.4;cursor:default}
+input,select{font:inherit;background:#0e1219;border:1px solid var(--brd);border-radius:9px;color:var(--fg);padding:8px 12px;outline:none;width:100%}
+input:focus{border-color:var(--accent)}
+header{display:flex;align-items:center;gap:14px;padding:18px 26px;border-bottom:1px solid var(--brd);position:sticky;top:0;background:rgba(11,14,18,.9);backdrop-filter:blur(10px);z-index:5}
+header img{height:34px}
+header .t{font-weight:800;letter-spacing:.28em;font-size:14px}
+header .t small{display:block;letter-spacing:.1em;color:var(--dim);font-weight:500;font-size:11px;margin-top:2px}
+header .right{margin-left:auto;display:flex;gap:10px;align-items:center}
+.chip{font-size:11px;letter-spacing:.08em;color:var(--dim);border:1px solid var(--brd);border-radius:99px;padding:4px 10px}
+main{max-width:1080px;margin:0 auto;padding:26px;display:grid;gap:20px}
+.grid{display:grid;gap:20px;grid-template-columns:repeat(auto-fit,minmax(320px,1fr))}
+.card{background:var(--panel);border:1px solid var(--brd);border-radius:var(--radius);padding:20px}
+.card h2{font-size:13px;letter-spacing:.22em;color:var(--dim);font-weight:700;margin-bottom:16px;text-transform:uppercase}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:14px}
+.stat{background:var(--panel2);border-radius:10px;padding:12px 14px}
+.stat .v{font-size:20px;font-weight:800;font-variant-numeric:tabular-nums}
+.stat .l{font-size:11px;color:var(--faint);letter-spacing:.08em;margin-top:4px;text-transform:uppercase}
+.row{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--brd)}
+.row:last-child{border-bottom:0}
+.dot{width:9px;height:9px;border-radius:99px;background:var(--faint);flex:none}
+.dot.on{background:var(--ok);box-shadow:0 0 8px var(--ok)}
+.dot.off{background:var(--bad)}
+.row .name{font-weight:600;flex:1;min-width:0}
+.row .sub{color:var(--faint);font-size:12px}
+.row .acts{display:flex;gap:6px}
+.row .acts button{padding:5px 10px;font-size:12px}
+pre{background:#07090c;border:1px solid var(--brd);border-radius:10px;padding:14px;font-size:12px;line-height:1.55;overflow:auto;max-height:340px;white-space:pre-wrap;word-break:break-all;color:#b9c4d4}
+.field{display:grid;gap:6px;margin-bottom:12px}
+.field label{font-size:12px;color:var(--dim);letter-spacing:.05em}
+.inline{display:flex;gap:10px;align-items:center}
+.msg{font-size:13px;margin-top:10px;min-height:18px}
+.msg.ok{color:var(--ok)} .msg.err{color:var(--bad)}
+.badge{font-size:11px;padding:3px 9px;border-radius:99px;background:var(--panel2);color:var(--dim)}
+.badge.up{background:rgba(0,170,255,.15);color:var(--accent);font-weight:700}
+#login{max-width:380px;margin:12vh auto;text-align:center}
+#login img{height:52px;margin-bottom:18px}
+#login .card{text-align:left}
+.hidden{display:none!important}
+.bar{height:6px;border-radius:99px;background:var(--panel2);overflow:hidden;margin-top:8px}
+.bar i{display:block;height:100%;background:var(--accent);width:0;transition:width .6s}
+.toggle{position:relative;width:42px;height:24px;flex:none;background:var(--panel2);border-radius:99px;cursor:pointer;transition:.2s}
+.toggle.on{background:var(--accent)}
+.toggle i{position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:99px;background:#fff;transition:.2s}
+.toggle.on i{left:21px}
+</style>
+</head>
+<body>
+
+<div id="login">
+  <img src="/logo.png" alt="RAMTECH" onerror="this.style.display='none'">
+  <div style="font-weight:800;letter-spacing:.3em;margin-bottom:22px">RAMTECH · DEVICE MANAGER</div>
+  <div class="card">
+    <div class="field"><label>Password</label>
+      <input id="pw" type="password" autofocus placeholder="default: ramtech">
+    </div>
+    <button class="primary" style="width:100%" onclick="doLogin()">Sign in</button>
+    <div id="loginMsg" class="msg err"></div>
+  </div>
+</div>
+
+<div id="shell" class="hidden">
+<header>
+  <img src="/logo.png" alt="" onerror="this.style.display='none'">
+  <div class="t">RAMTECH<small>DEVICE MANAGER</small></div>
+  <div class="right">
+    <span id="hostChip" class="chip">—</span>
+    <span id="verChip" class="chip">—</span>
+    <button onclick="logout()">Sign out</button>
+  </div>
+</header>
+<main>
+
+  <div id="pwWarn" class="card hidden" style="border-color:var(--warn)">
+    ⚠ You're using the default password — <b>change it below</b> (System panel).
+  </div>
+
+  <div class="card">
+    <h2>Status</h2>
+    <div class="stats" id="stats"></div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h2>Services</h2>
+      <div id="services"></div>
+    </div>
+
+    <div class="card">
+      <h2>Software update</h2>
+      <div class="row" style="border:0;padding-top:0">
+        <div class="name">Installed <span id="curVer" class="badge">—</span></div>
+        <div class="acts">
+          <button onclick="checkUpdate()">Check</button>
+          <button id="applyBtn" class="primary hidden" onclick="applyUpdate()">Update</button>
+          <button onclick="rollback()" title="Return to the previous version">Roll back</button>
+        </div>
+      </div>
+      <div id="updInfo" class="msg"></div>
+      <div id="otaProg" class="hidden"><div class="bar"><i id="otaBar"></i></div>
+        <div class="msg" id="otaMsg"></div></div>
+      <div class="row" style="margin-top:6px">
+        <div class="name" style="font-weight:500;font-size:14px">Automatic daily updates</div>
+        <div class="toggle" id="autoTgl" onclick="toggleAuto()"><i></i></div>
+      </div>
+      <div class="field" style="margin-top:10px">
+        <label>GitHub repo (owner/name)</label>
+        <div class="inline"><input id="repoIn" placeholder="youruser/spotify-tv-jam">
+          <button onclick="saveRepo()">Save</button></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Network</h2>
+      <div id="netDevs"></div>
+      <div id="wifiBox" class="hidden">
+        <div class="inline" style="margin:10px 0 6px">
+          <button onclick="wifiScan()">Scan Wi-Fi</button><span id="wifiMsg" class="msg"></span>
+        </div>
+        <div id="wifiList"></div>
+      </div>
+      <div class="field" style="margin-top:12px">
+        <label>Hostname</label>
+        <div class="inline"><input id="hostIn"><button onclick="saveHost()">Apply</button></div>
+        <div id="hostMsg" class="msg"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>System</h2>
+      <div class="row" style="border:0;padding-top:0">
+        <div class="name" style="font-weight:500;font-size:14px">OS packages (apt upgrade)</div>
+        <button onclick="aptUpgrade()">Upgrade</button>
+      </div>
+      <pre id="aptLog" class="hidden"></pre>
+      <div class="field" style="margin-top:14px">
+        <label>Change password</label>
+        <input id="pwCur" type="password" placeholder="current password" style="margin-bottom:6px">
+        <div class="inline"><input id="pwNew" type="password" placeholder="new password (6+ chars)">
+          <button onclick="changePw()">Change</button></div>
+        <div id="pwMsg" class="msg"></div>
+      </div>
+      <div class="inline" style="margin-top:16px">
+        <button class="danger" onclick="power('reboot')">⟳ Reboot</button>
+        <button class="danger" onclick="power('poweroff')">⏻ Shut down</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Logs</h2>
+    <div class="inline" style="margin-bottom:12px">
+      <select id="logUnit" style="max-width:240px">
+        <option value="spotify-tv-jam">spotify-tv-jam (dashboard)</option>
+        <option value="ramtech-admin">ramtech-admin (this UI)</option>
+        <option value="raspotify">raspotify (audio player)</option>
+      </select>
+      <select id="logLines" style="max-width:120px">
+        <option>100</option><option selected>200</option><option>500</option><option>1000</option>
+      </select>
+      <button onclick="loadLogs()">Refresh</button>
+    </div>
+    <pre id="logOut">—</pre>
+  </div>
+
+</main>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const api = async (path, opts) => {
+  const r = await fetch('/api' + path, { headers: { 'content-type': 'application/json' }, ...opts });
+  if (r.status === 401) { show(false); throw new Error('auth'); }
+  return r.json();
+};
+const post = (path, body) => api(path, { method: 'POST', body: JSON.stringify(body || {}) });
+
+function show(authed) {
+  $('login').classList.toggle('hidden', authed);
+  $('shell').classList.toggle('hidden', !authed);
+}
+
+async function doLogin() {
+  const r = await post('/login', { password: $('pw').value });
+  if (!r.ok) { $('loginMsg').textContent = r.error || 'Failed'; return; }
+  $('pw').value = ''; $('loginMsg').textContent = '';
+  $('pwWarn').classList.toggle('hidden', !r.mustChange);
+  show(true); boot();
+}
+$('pw').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+async function logout() { await post('/logout'); show(false); }
+
+// ── Status ──
+const fmtB = (n) => n == null ? '—' : n > 2 ** 30 ? (n / 2 ** 30).toFixed(1) + ' GB' : Math.round(n / 2 ** 20) + ' MB';
+const fmtUp = (s) => s > 86400 ? Math.floor(s / 86400) + 'd ' + Math.floor(s % 86400 / 3600) + 'h'
+  : Math.floor(s / 3600) + 'h ' + Math.floor(s % 3600 / 60) + 'm';
+async function refreshStatus() {
+  try {
+    const s = await api('/status');
+    $('hostChip').textContent = s.hostname + (s.ips[0] ? ' · ' + s.ips[0].ip : '');
+    $('verChip').textContent = (s.appVersion || 'dev') + (s.mock ? ' · MOCK' : '');
+    const cells = [
+      ['CPU load', s.load[0].toFixed(2) + ' / ' + s.cpus + 'c'],
+      ['Temp', s.tempC != null ? s.tempC.toFixed(0) + ' °C' : '—'],
+      ['Memory', fmtB(s.mem.total - s.mem.free) + ' / ' + fmtB(s.mem.total)],
+      ['Disk free', s.disk ? fmtB(s.disk.free) : '—'],
+      ['Uptime', fmtUp(s.uptimeSec)],
+      ['OS', s.os],
+    ];
+    $('stats').innerHTML = cells.map(([l, v]) => `<div class="stat"><div class="v">${v}</div><div class="l">${l}</div></div>`).join('');
+    $('curVer').textContent = s.appVersion || 'dev';
+    if (!$('hostIn').value) $('hostIn').value = s.hostname;
+  } catch {}
+}
+
+// ── Services ──
+const SVC_LABELS = { 'spotify-tv-jam': 'Jam dashboard', 'ramtech-admin': 'Device manager', 'raspotify': 'Audio player (librespot)' };
+async function refreshServices() {
+  try {
+    const s = await api('/services');
+    $('services').innerHTML = Object.entries(s).map(([u, st]) => `
+      <div class="row">
+        <div class="dot ${st.active === 'active' ? 'on' : 'off'}"></div>
+        <div class="name">${SVC_LABELS[u] || u}<div class="sub">${u} · ${st.active}, ${st.enabled}</div></div>
+        <div class="acts">
+          <button onclick="svc('${u}','restart')">Restart</button>
+          <button onclick="svc('${u}','${st.active === 'active' ? 'stop' : 'start'}')">${st.active === 'active' ? 'Stop' : 'Start'}</button>
+        </div>
+      </div>`).join('');
+  } catch {}
+}
+async function svc(u, a) {
+  if (u === 'ramtech-admin' && a !== 'restart' && !confirm('Stopping the device manager cuts off this page. Continue?')) return;
+  await post(`/services/${u}/${a}`); setTimeout(refreshServices, 800);
+}
+
+// ── Updates ──
+let otaTimer = null;
+async function loadUpdateSettings() {
+  const s = await api('/update/settings');
+  $('repoIn').value = s.repo || '';
+  $('autoTgl').classList.toggle('on', !!s.autoUpdate);
+}
+async function saveRepo() {
+  const r = await post('/update/settings', { repo: $('repoIn').value });
+  $('updInfo').className = 'msg ' + (r.ok ? 'ok' : 'err');
+  $('updInfo').textContent = r.ok ? 'Saved.' : r.error;
+}
+async function toggleAuto() {
+  const on = !$('autoTgl').classList.contains('on');
+  const r = await post('/update/auto', { enabled: on });
+  if (r.ok) $('autoTgl').classList.toggle('on', on);
+}
+async function checkUpdate() {
+  $('updInfo').className = 'msg'; $('updInfo').textContent = 'Checking…';
+  const r = await api('/update/check');
+  if (!r.ok) { $('updInfo').className = 'msg err'; $('updInfo').textContent = r.error; return; }
+  $('applyBtn').classList.toggle('hidden', !r.updateAvailable);
+  $('updInfo').className = 'msg ' + (r.updateAvailable ? 'ok' : '');
+  $('updInfo').textContent = r.updateAvailable
+    ? `Update available: ${r.latest} (installed ${r.current || 'dev'})`
+    : `Up to date (${r.current || 'dev'} — latest is ${r.latest}).`;
+}
+async function applyUpdate() {
+  const r = await post('/update/apply');
+  if (!r.ok) { $('updInfo').className = 'msg err'; $('updInfo').textContent = r.error; return; }
+  watchOta();
+}
+async function rollback() {
+  if (!confirm('Roll back to the previous version?')) return;
+  const r = await post('/update/rollback');
+  if (!r.ok) { $('updInfo').className = 'msg err'; $('updInfo').textContent = r.error; return; }
+  watchOta();
+}
+const OTA_PCT = { idle: 0, downloading: 30, installing: 60, verifying: 85, success: 100, failed: 100, rolledback: 100 };
+function watchOta() {
+  $('otaProg').classList.remove('hidden'); $('applyBtn').classList.add('hidden');
+  clearInterval(otaTimer);
+  otaTimer = setInterval(async () => {
+    try {
+      const s = await api('/update/status');
+      $('otaBar').style.width = (OTA_PCT[s.state] ?? 10) + '%';
+      $('otaMsg').className = 'msg ' + (s.state === 'success' ? 'ok' : /fail/.test(s.state) ? 'err' : '');
+      $('otaMsg').textContent = s.state + (s.version ? ' · ' + s.version : '') + (s.error ? ' — ' + s.error : '');
+      if (['success', 'failed', 'rolledback', 'idle'].includes(s.state)) {
+        clearInterval(otaTimer); refreshStatus();
+      }
+    } catch {}
+  }, 1200);
+}
+
+// ── Network ──
+async function refreshNet() {
+  try {
+    const n = await api('/network');
+    $('netDevs').innerHTML = (n.devices.length ? n.devices : [{ device: '—', type: '', state: 'none found' }])
+      .map(d => `<div class="row"><div class="dot ${d.state === 'connected' ? 'on' : ''}"></div>
+        <div class="name">${d.device}<div class="sub">${d.type} · ${d.state}${d.connection ? ' · ' + d.connection : ''}</div></div></div>`).join('');
+    $('wifiBox').classList.toggle('hidden', !n.wifiSupported);
+    if (!n.wifiSupported) $('netDevs').innerHTML += '<div class="sub" style="color:var(--faint);font-size:12px;padding-top:8px">No Wi-Fi adapter detected — this board uses wired Ethernet (plug in a USB Wi-Fi dongle to enable Wi-Fi).</div>';
+  } catch {}
+}
+async function wifiScan() {
+  $('wifiMsg').textContent = 'Scanning…';
+  const r = await api('/network/wifi/scan');
+  $('wifiMsg').textContent = r.ok ? '' : (r.error || 'failed');
+  if (!r.ok) return;
+  $('wifiList').innerHTML = r.networks.map(n => `
+    <div class="row"><div class="name">${n.ssid}<div class="sub">${n.security || 'open'} · ${n.signal}%</div></div>
+      <button onclick="wifiJoin('${n.ssid.replace(/'/g, "\\'")}', ${!!n.security})">Join</button></div>`).join('');
+}
+async function wifiJoin(ssid, secured) {
+  const password = secured ? prompt(`Password for “${ssid}”:`) : '';
+  if (secured && !password) return;
+  $('wifiMsg').textContent = 'Connecting…';
+  const r = await post('/network/wifi/connect', { ssid, password });
+  $('wifiMsg').textContent = r.ok ? 'Connected ✓' : (r.error || 'failed');
+  refreshNet();
+}
+async function saveHost() {
+  const r = await post('/network/hostname', { hostname: $('hostIn').value.trim() });
+  $('hostMsg').className = 'msg ' + (r.ok ? 'ok' : 'err');
+  $('hostMsg').textContent = r.ok ? 'Hostname changed.' : r.error;
+  refreshStatus();
+}
+
+// ── System ──
+let aptTimer = null;
+async function aptUpgrade() {
+  const r = await post('/apt/upgrade');
+  $('aptLog').classList.remove('hidden');
+  if (!r.ok) { $('aptLog').textContent = r.error || 'failed'; return; }
+  clearInterval(aptTimer);
+  aptTimer = setInterval(async () => {
+    const s = await api('/apt/status');
+    $('aptLog').textContent = s.log || '…';
+    $('aptLog').scrollTop = $('aptLog').scrollHeight;
+    if (!s.running) { clearInterval(aptTimer); $('aptLog').textContent += `\n[done, exit ${s.code}]`; }
+  }, 1200);
+}
+async function changePw() {
+  const r = await post('/password', { current: $('pwCur').value, next: $('pwNew').value });
+  $('pwMsg').className = 'msg ' + (r.ok ? 'ok' : 'err');
+  $('pwMsg').textContent = r.ok ? 'Password changed.' : r.error;
+  if (r.ok) { $('pwCur').value = $('pwNew').value = ''; $('pwWarn').classList.add('hidden'); }
+}
+async function power(a) {
+  if (!confirm(a === 'reboot' ? 'Reboot the device?' : 'Shut the device down?')) return;
+  await post(`/power/${a}`);
+}
+
+// ── Logs ──
+async function loadLogs() {
+  const r = await api(`/logs/${$('logUnit').value}?lines=${$('logLines').value}`);
+  $('logOut').textContent = r.text || r.error || '—';
+  $('logOut').scrollTop = $('logOut').scrollHeight;
+}
+
+// ── Boot ──
+let pollTimer = null;
+function boot() {
+  refreshStatus(); refreshServices(); refreshNet(); loadUpdateSettings(); loadLogs();
+  clearInterval(pollTimer);
+  pollTimer = setInterval(() => { refreshStatus(); refreshServices(); }, 10_000);
+}
+(async () => {
+  const s = await fetch('/api/session').then(r => r.json()).catch(() => ({}));
+  show(!!s.authed);
+  if (s.authed) { $('pwWarn').classList.toggle('hidden', !s.mustChange); boot(); }
+})();
+</script>
+</body>
+</html>

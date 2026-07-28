@@ -1,0 +1,16 @@
+{
+  "name": "ramtech-admin",
+  "version": "1.0.0",
+  "description": "RAMTECH OS device management web UI: status, network, services, logs, OTA updates.",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}

@@ -1,0 +1,50 @@
+name: Release
+
+# Tag a version (v1.2.3) → builds the OTA tarball and attaches it to a GitHub
+# Release. Devices (and the image builder) download ramtech-app-<tag>.tar.gz.
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install production dependencies
+        run: |
+          npm ci --omit=dev --prefix app
+          npm ci --omit=dev --prefix admin
+
+      - name: Lint shell scripts
+        run: |
+          sudo apt-get install -y shellcheck >/dev/null
+          shellcheck os/userpatches/overlay/bin/*.sh app/deploy/kiosk.sh
+
+      - name: Build tarball
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          STAGE="$(mktemp -d)"
+          cp -r app admin "$STAGE/"
+          mkdir -p "$STAGE/bin"
+          cp os/userpatches/overlay/bin/*.sh "$STAGE/bin/"
+          chmod +x "$STAGE/bin/"*.sh "$STAGE/app/deploy/"*.sh
+          printf '%s\n' "$TAG" > "$STAGE/VERSION"
+          # Never ship local state or secrets.
+          rm -rf "$STAGE/app/.data" "$STAGE/app/.env"
+          tar -czf "ramtech-app-$TAG.tar.gz" -C "$STAGE" app admin bin VERSION
+          tar -tzf "ramtech-app-$TAG.tar.gz" | head -5
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ramtech-app-*.tar.gz
+          generate_release_notes: true

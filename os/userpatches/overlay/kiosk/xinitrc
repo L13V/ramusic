@@ -1,0 +1,9 @@
+#!/bin/sh
+# RAMTECH kiosk X session (user "ramtech"). Started by .bash_profile on tty1.
+xset s off
+xset -dpms
+xset s noblank
+command -v unclutter >/dev/null 2>&1 && unclutter -idle 1 &
+openbox &
+# kiosk.sh waits for the server's /api/health, then execs chromium --kiosk.
+exec /opt/ramtech/current/app/deploy/kiosk.sh

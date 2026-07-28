@@ -1,4 +1,9 @@
-# 🎧 spotify-tv-jam
+# 🎧 spotify-tv-jam / RAMTECH OS
+
+> **Repo layout:** the TV dashboard app lives in [`app/`](app/), the RAMTECH
+> device-manager web UI in [`admin/`](admin/), and the Orange Pi 5 OS image
+> build in [`os/`](os/) — see **RAMTECH OS appliance** at the bottom.
+> `start.bat` / `start.sh` still run the app from the repo root as before.
 
 A full-screen "listening party" dashboard for a TV. It shows:
 
@@ -199,16 +204,64 @@ triggers playback.
 
 ## File map
 ```
-server.js         Express server + /api/state + setup/OAuth routes + server-side QR
-lib/auth.js       Sign-in flow (PKCE), token store (.data/auth.json), self-signed TLS
-lib/tunnel.js     Cloudflare quick tunnel (public address for setup + the Jam QR)
-lib/spotify.js    Web API (now playing, queue) + Jam session + join-URL builder
-lib/webtoken.js   Mints the Jam web token via the logged-in browser (no TOTP forgery)
-lib/remote.js     Phone-driven remote Spotify sign-in (CDP screen-share) + browser finder
-lib/weather.js    Open-Meteo geocode + current conditions
-lib/demo.js       Fake data for DEMO=true
-public/           The TV UI (index.html, style.css, app.js), player.js
-                  (Web Playback SDK), and setup.html (OTP-gated phone sign-in)
-deploy/           Orange Pi installer: install.sh, kiosk.sh, systemd service
-.data/            Generated at runtime: tokens, TLS cert, cloudflared, PID (gitignored)
+app/server.js       Express server + /api/state + setup/OAuth routes + server-side QR
+app/lib/auth.js     Sign-in flow (PKCE), token store (.data/auth.json), self-signed TLS
+app/lib/tunnel.js   Cloudflare quick tunnel (public address for setup + the Jam QR)
+app/lib/spotify.js  Web API (now playing, queue) + Jam session + join-URL builder
+app/lib/webtoken.js Mints the Jam web token via the logged-in browser (no TOTP forgery)
+app/lib/remote.js   Phone-driven remote Spotify sign-in (CDP screen-share) + browser finder
+app/lib/weather.js  Open-Meteo geocode + current conditions
+app/lib/demo.js     Fake data for DEMO=true
+app/public/         The TV UI (index.html, style.css, app.js), player.js
+                    (Web Playback SDK), and setup.html (OTP-gated phone sign-in)
+app/deploy/kiosk.sh Kiosk browser launcher (used by the OS image + install.sh)
+app/.data/          Generated at runtime: tokens, TLS cert, cloudflared (gitignored)
+admin/              RAMTECH device manager web UI (port 8080) — see below
+os/                 RAMTECH OS image build (Armbian userpatches) — see below
+deploy/install.sh   Legacy manual installer for an existing Debian/Armbian board
+.github/workflows/  release.yml: tag v* → OTA tarball on GitHub Releases
 ```
+
+---
+
+# 🖥 RAMTECH OS appliance (Orange Pi 5)
+
+A flashable, RAMTECH-branded OS image that boots straight into the dashboard —
+plus a **device manager web UI** and **OTA updates**.
+
+## What's in the image
+- Armbian trixie (mainline kernel, Mali GPU accel), branded **RAMTECH OS**
+- Boots keyboard-free: autologin → X11 → Chromium kiosk on `localhost:3000`
+- `spotify-tv-jam` + `ramtech-admin` as systemd services, librespot
+  (**RAMTECH TV** Spotify Connect device) for audio
+- App installed under `/opt/ramtech/releases/<ver>` with a `current` symlink;
+  tokens/settings live in `/opt/ramtech/data` and survive updates
+
+## Device manager (port 8080)
+`http://ramtech.local:8080` — default password **`ramtech`** (a change is
+forced on first login). Status/temps, service control, journals, Wi-Fi (with a
+USB dongle), hostname, apt upgrades, reboot — and **Software update**: checks
+this repo's GitHub Releases, installs atomically, health-checks the app and
+**rolls back automatically** if the new version doesn't come up. Optional
+daily auto-update timer.
+
+## Releasing an update (OTA)
+```bash
+git tag v1.2.3 && git push origin v1.2.3
+```
+CI builds `ramtech-app-v1.2.3.tar.gz` (app + admin + updater, node_modules
+bundled) and publishes a GitHub Release. Devices see it via **Check** or the
+daily timer.
+
+## Building the image (Windows + WSL2)
+```bash
+wsl -u root bash os/build.sh
+```
+First build compiles a kernel (~1–2 h, ~50 GB in the WSL disk); later builds
+are ~15–30 min. Output: `~/armbian/build/output/images/…img.xz` (inside WSL).
+Flash with balenaEtcher/USBImager. The build bakes in the **latest GitHub
+release** of the app (set the repo in `os/userpatches/overlay/seed/repo.txt`),
+or drop a `ramtech-app-<ver>.tar.gz` into `os/userpatches/overlay/seed/` to
+build fully offline.
+
+Console login: user `ramtech` / password `ramtech` (root is locked).

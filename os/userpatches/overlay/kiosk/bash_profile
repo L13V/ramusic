@@ -1,0 +1,6 @@
+# RAMTECH kiosk: autologin on tty1 starts X straight into the dashboard.
+# If Chromium/X ever dies, getty re-logins and this restarts the whole session.
+if [ -z "$DISPLAY" ] && [ "$(tty)" = /dev/tty1 ]; then
+  sleep 2   # soften a crash loop
+  exec startx >/tmp/kiosk-x.log 2>&1
+fi

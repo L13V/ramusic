@@ -1,0 +1,18 @@
+[Unit]
+Description=RAMTECH Spotify TV Jam server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ramtech
+WorkingDirectory=/opt/ramtech/current/app
+ExecStart=/usr/bin/node server.js
+Restart=always
+RestartSec=3
+# The remote sign-in feature opens a real Chromium window on the kiosk display.
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=/home/ramtech/.Xauthority
+
+[Install]
+WantedBy=multi-user.target

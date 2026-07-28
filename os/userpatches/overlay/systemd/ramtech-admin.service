@@ -1,0 +1,15 @@
+[Unit]
+Description=RAMTECH device manager (admin web UI on :8080)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/ramtech/current/admin
+ExecStart=/usr/bin/node server.js
+Restart=always
+RestartSec=3
+ProtectHome=read-only
+
+[Install]
+WantedBy=multi-user.target

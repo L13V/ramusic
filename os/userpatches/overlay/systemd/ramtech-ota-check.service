@@ -1,0 +1,8 @@
+[Unit]
+Description=RAMTECH OTA auto-update check
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/ramtech/bin/ramtech-ota-check.sh
