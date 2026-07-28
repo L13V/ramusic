@@ -20,7 +20,7 @@ REL_JSON="$(curl -fsS -m 20 -H 'accept: application/vnd.github+json' -H 'user-ag
 
 LATEST="$(printf '%s' "$REL_JSON" | jq -r '.tag_name // empty')"
 URL="$(printf '%s' "$REL_JSON" | jq -r '[.assets[] | select(.name | startswith("ramtech-app-") and endswith(".tar.gz"))][0].browser_download_url // empty')"
-[ -n "$LATEST" ] && [ -n "$URL" ] || { echo "no usable release"; exit 0; }
+if [ -z "$LATEST" ] || [ -z "$URL" ]; then echo "no usable release"; exit 0; fi
 
 # Newest of the two versions, by version-sort. Equal → nothing to do.
 HIGHEST="$(printf '%s\n%s\n' "${CURRENT#v}" "${LATEST#v}" | sort -V | tail -1)"

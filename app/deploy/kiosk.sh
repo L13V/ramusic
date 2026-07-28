@@ -22,7 +22,7 @@ xset s off 2>/dev/null || true
 xset -dpms 2>/dev/null || true
 xset s noblank 2>/dev/null || true
 # Hide the mouse cursor if unclutter is present.
-command -v unclutter >/dev/null 2>&1 && (unclutter -idle 1 &) 2>/dev/null || true
+if command -v unclutter >/dev/null 2>&1; then (unclutter -idle 1 &) 2>/dev/null; fi
 
 exec "$BIN" \
   --kiosk "$URL" \

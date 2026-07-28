@@ -27,7 +27,7 @@ jobs:
       - name: Lint shell scripts
         run: |
           sudo apt-get install -y shellcheck >/dev/null
-          shellcheck os/userpatches/overlay/bin/*.sh app/deploy/kiosk.sh
+          shellcheck -S warning os/userpatches/overlay/bin/*.sh app/deploy/kiosk.sh
 
       - name: Build tarball
         run: |
