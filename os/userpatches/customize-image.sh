@@ -130,4 +130,7 @@ install -m 0755 "$OVERLAY/branding/20-ramtech" /etc/update-motd.d/20-ramtech
 sed -i 's/^PRETTY_NAME=.*/PRETTY_NAME="RAMTECH OS (Armbian trixie)"/' /etc/os-release || true
 
 apt-get clean
+# Armbian's apt-cache manager requires the rootfs lists dir to be empty between
+# apt runs — our apt-get update above populated it, which aborts the build.
+rm -rf /var/lib/apt/lists/*
 echo "=== RAMTECH customize done: $VERSION ==="
