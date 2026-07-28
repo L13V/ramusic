@@ -175,24 +175,43 @@ export async function startRemote({ startUrl, onCapture, isOauthDone, wantSpDc =
   mkdirSync(PROFILE_DIR, { recursive: true });
   const port = await freePort();
 
-  const child = spawn(browser, [
-    `--user-data-dir=${PROFILE_DIR}`,
-    `--remote-debugging-port=${port}`,
-    '--remote-allow-origins=*',
-    '--no-first-run',
-    '--no-default-browser-check',
-    // Look like an ordinary browser so reCAPTCHA doesn't keep challenging.
-    '--disable-blink-features=AutomationControlled',
-    '--disable-features=Translate,MediaRouter',
-    `--window-size=${VW},${VH}`,
-    startUrl || LOGIN_URL,
-  ], { detached: true, stdio: 'ignore' });
-  child.on('error', () => {});
+  const launch = (dbgPort, headless) => {
+    const args = [
+      `--user-data-dir=${PROFILE_DIR}`,
+      `--remote-debugging-port=${dbgPort}`,
+      '--remote-allow-origins=*',
+      '--no-first-run',
+      '--no-default-browser-check',
+      // Look like an ordinary browser so reCAPTCHA doesn't keep challenging.
+      '--disable-blink-features=AutomationControlled',
+      '--disable-features=Translate,MediaRouter',
+      `--window-size=${VW},${VH}`,
+    ];
+    // The phone only ever sees CDP screenshots, so headless Chromium serves
+    // the remote just as well when there's no (working) display.
+    if (headless) args.push('--headless=new', '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage');
+    args.push(startUrl || LOGIN_URL);
+    const c = spawn(browser, args, { detached: true, stdio: 'ignore' });
+    c.on('error', () => {});
+    return c;
+  };
 
+  // Headed if an X/Wayland display is plausible; otherwise straight to headless.
+  const hasDisplay = process.platform !== 'linux' || !!process.env.DISPLAY || !!process.env.WAYLAND_DISPLAY;
+  let dbgPort = port;
+  let child = launch(dbgPort, !hasDisplay);
   session = { child, conn: null, frame: null, frames: 0, meta: { deviceWidth: VW, deviceHeight: VH }, status: 'starting', message: 'Opening Spotify sign-in on the PC…', onCapture };
 
-  const deadline = Date.now() + 25_000;
-  const wsUrl = await pageTarget(port, deadline);
+  let wsUrl = await pageTarget(dbgPort, Date.now() + 25_000);
+  if (!wsUrl && hasDisplay && process.platform === 'linux') {
+    // DISPLAY was set but the browser never came up (X dead / container) —
+    // retry headless on a fresh port before giving up.
+    try { if (child.pid) process.kill(child.pid); } catch {}
+    dbgPort = await freePort();
+    child = launch(dbgPort, true);
+    if (session) session.child = child;
+    wsUrl = await pageTarget(dbgPort, Date.now() + 25_000);
+  }
   if (!wsUrl) { await stopRemote(); throw new Error('Could not attach to the browser.'); }
   const conn = await cdp(wsUrl);
   session.conn = conn;
@@ -200,7 +219,7 @@ export async function startRemote({ startUrl, onCapture, isOauthDone, wantSpDc =
   // Separate browser-level connection for cookie reads (survives page swaps).
   let cookieConn = conn;
   try {
-    const bUrl = await browserTarget(port, Date.now() + 5000);
+    const bUrl = await browserTarget(dbgPort, Date.now() + 5000);
     if (bUrl) { cookieConn = await cdp(bUrl); session.browserConn = cookieConn; }
   } catch {}
 
