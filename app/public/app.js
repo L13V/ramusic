@@ -51,13 +51,42 @@ function paintNow(s) {
     $('bg').style.backgroundImage = `url("${t.image}")`;
     lastArt = t.image;
   } else if (!t.image) { art.style.display = 'none'; empty.style.display = 'grid'; }
-  const pct = t.durationMs ? Math.min(100, (s.progressMs / t.durationMs) * 100) : 0;
-  $('scrub-fill').style.width = pct + '%';
-  $('t-cur').textContent = fmt(s.progressMs);
+  // Snapshot for the 250ms interpolation ticker — the bar moves smoothly
+  // between polls instead of jumping once per refresh.
+  prog = { ms: s.progressMs || 0, dur: t.durationMs || 0, playing: !!s.isPlaying, at: Date.now() };
+  paintProgress();
   $('t-dur').textContent = fmt(t.durationMs);
   $('now-added').innerHTML = t.addedBy ? `Added by <b>${escapeHtml(t.addedBy)}</b>` : '';
+  paintPlayIcon(!!s.isPlaying);
   lastTrackId = t.id;
 }
+
+// ── Smooth progress: advance locally between polls ──
+let prog = { ms: 0, dur: 0, playing: false, at: 0 };
+function paintProgress() {
+  const ms = prog.playing ? Math.min(prog.ms + (Date.now() - prog.at), prog.dur || Infinity) : prog.ms;
+  $('scrub-fill').style.width = (prog.dur ? Math.min(100, (ms / prog.dur) * 100) : 0) + '%';
+  $('t-cur').textContent = fmt(ms);
+}
+setInterval(paintProgress, 250);
+
+// ── Touch transport controls ──
+function paintPlayIcon(playing) {
+  $('ic-play').style.display = playing ? 'none' : 'block';
+  $('ic-pause').style.display = playing ? 'block' : 'none';
+}
+async function ctl(action) {
+  try { await fetch('/api/player/control/' + action, { method: 'POST' }); } catch {}
+  setTimeout(fastPoll, 250); // give Spotify a beat, then repaint right away
+}
+$('ctl-prev').addEventListener('click', () => ctl('previous'));
+$('ctl-next').addEventListener('click', () => ctl('next'));
+$('ctl-play').addEventListener('click', () => {
+  const playing = $('ic-pause').style.display !== 'none';
+  paintPlayIcon(!playing);                          // optimistic flip
+  prog = { ...prog, ms: prog.playing ? prog.ms + (Date.now() - prog.at) : prog.ms, playing: !playing, at: Date.now() };
+  ctl(playing ? 'pause' : 'play');
+});
 
 function paintIdle(idle) {
   document.body.classList.toggle('is-idle', idle);
@@ -164,6 +193,8 @@ async function pollOtp() {
 }
 pollOtp();
 
+let pollTimer = null;
+function fastPoll() { clearTimeout(pollTimer); poll(); }
 async function poll() {
   try {
     const r = await fetch('/api/state', { cache: 'no-store' });
@@ -187,7 +218,8 @@ async function poll() {
   } catch (e) {
     $('err').textContent = 'offline: ' + e.message;
   } finally {
-    setTimeout(poll, cfg.refreshMs || 5000);
+    clearTimeout(pollTimer);
+    pollTimer = setTimeout(poll, cfg.refreshMs || 2000);
   }
 }
 poll();

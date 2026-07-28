@@ -111,7 +111,94 @@ function pickJoinUrl(session) {
   return null;
 }
 
+// ─────────────────────────────────────────────────────────────
+//  Who-queued-what. The session object stopped carrying queue data; the web
+//  player now reads it from the connect-state player state, which requires a
+//  dealer-websocket connection id. We keep one dealer socket alive (with pings)
+//  and PUT a hidden observer device each poll to read next_tracks[].metadata
+//  .queued_by (a username — mapped to a display name via session_members).
+// ─────────────────────────────────────────────────────────────
+const SPCLIENT = 'https://spclient.wg.spotify.com';
+let dWs = null, dConnId = null, dTok = null, dOpening = null, dPing = null;
+
+function dealerClose() {
+  try { clearInterval(dPing); } catch {}
+  try { dWs?.close(); } catch {}
+  dWs = null; dConnId = null; dTok = null; dPing = null;
+}
+
+function dealerConnId(tok) {
+  if (dConnId && dWs?.readyState === 1 && dTok === tok) return Promise.resolve(dConnId);
+  if (dOpening) return dOpening;
+  dealerClose();
+  dOpening = new Promise((resolve) => {
+    let ws;
+    try { ws = new WebSocket(`wss://dealer.spotify.com/?access_token=${encodeURIComponent(tok)}`); }
+    catch { return resolve(null); }
+    const to = setTimeout(() => { try { ws.close(); } catch {} resolve(null); }, 10_000);
+    ws.onmessage = (ev) => {
+      try {
+        const id = JSON.parse(ev.data)?.headers?.['Spotify-Connection-Id'];
+        if (id) {
+          clearTimeout(to);
+          dWs = ws; dConnId = id; dTok = tok;
+          // The dealer drops idle sockets — ping every 30s to keep it alive.
+          dPing = setInterval(() => { try { ws.send('{"type":"ping"}'); } catch {} }, 30_000);
+          resolve(id);
+        }
+      } catch {}
+    };
+    ws.onerror = () => { clearTimeout(to); resolve(null); };
+    ws.onclose = () => { if (dWs === ws) { clearInterval(dPing); dWs = null; dConnId = null; dTok = null; } };
+  }).finally(() => { dOpening = null; });
+  return dOpening;
+}
+
+async function fetchQueuedBy(tok) {
+  const put = async (connId) => fetch(`${SPCLIENT}/connect-state/v1/devices/hobs_ramtechtvobserver`, {
+    method: 'PUT',
+    headers: {
+      Authorization: `Bearer ${tok}`, 'User-Agent': UA, Accept: 'application/json',
+      'Content-Type': 'application/json', 'x-spotify-connection-id': connId,
+    },
+    body: JSON.stringify({
+      member_type: 'CONNECT_STATE',
+      device: { device_info: { capabilities: { can_be_player: false, hidden: true, needs_full_player_state: true } } },
+    }),
+  });
+  try {
+    let connId = await dealerConnId(tok);
+    if (!connId) return null;
+    let r = await put(connId);
+    if (!r.ok) { // stale connection id — reopen once
+      dealerClose();
+      connId = await dealerConnId(tok);
+      if (!connId) return null;
+      r = await put(connId);
+      if (!r.ok) return null;
+    }
+    const ps = (await r.json())?.player_state || {};
+    const out = {};
+    const grab = (t) => { const who = t?.metadata?.queued_by; if (t?.uri && who) out[t.uri] = who; };
+    grab(ps.track);                                  // the queued song now playing
+    for (const t of ps.next_tracks || []) grab(t);
+    return out;
+  } catch { return null; }
+}
+
+// The TV polls every ~2s for a snappy UI, but the jam/social-connect calls are
+// heavier (undocumented endpoints + the dealer socket) — cache their result so
+// they still run at most every ~4s.
+let jamCache = { data: null, ts: 0 };
+const JAM_CACHE_MS = 4000;
 async function getJam(env) {
+  if (jamCache.data && Date.now() - jamCache.ts < JAM_CACHE_MS) return jamCache.data;
+  const out = await getJamUncached(env);
+  jamCache = { data: out, ts: Date.now() };
+  return out;
+}
+
+async function getJamUncached(env) {
   const debug = String(env.JAM_DEBUG).toLowerCase() === 'true';
   const out = { joinUrl: null, members: [], contributors: {} };
   if (debug) out.debug = { attempts: [], deviceId: webDeviceId };
@@ -194,13 +281,27 @@ async function getJam(env) {
     isOwner: !!m.is_owner || m.id === session.session_owner_id,
   }));
 
-  // Map track uri -> contributor display name where the session exposes it.
+  // Map track uri -> contributor display name.
+  // Legacy shape: some session revisions carried the queue inline.
   for (const q of session.queue || session.queue_items || []) {
     const uri = q.metadata?.uri || q.uri || q.track_uri;
     const who =
       q.added_by?.display_name || q.metadata?.added_by || q.provider_display_name;
     if (uri && who) out.contributors[uri] = who;
   }
+  // Current shape: queued_by usernames live in the connect-state player state;
+  // session_members translates username -> display name.
+  const nameOf = {};
+  for (const m of session.session_members || []) {
+    if (m.username) nameOf[m.username] = m.display_name || m.name || m.username;
+  }
+  const queuedBy = await fetchQueuedBy(tok);
+  if (queuedBy) {
+    for (const [uri, user] of Object.entries(queuedBy)) {
+      out.contributors[uri] = nameOf[user] || user;
+    }
+  }
+  if (debug) out.debug.queuedBy = queuedBy ? Object.keys(queuedBy).length : null;
   return out;
 }
 

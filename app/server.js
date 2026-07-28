@@ -330,6 +330,27 @@ app.put('/api/player/volume', async (req, res) => {
 // Scan target for the Jam QR: forward the phone straight into the live Jam.
 // Playback is NOT started here — the server starts it once the scanner actually
 // shows up as a member (see manageJamPlayback), so music only plays with guests.
+// Touch controls on the TV: act on whatever device is playing via the Web API.
+app.post('/api/player/control/:action', async (req, res) => {
+  const map = {
+    play: ['PUT', '/me/player/play'],
+    pause: ['PUT', '/me/player/pause'],
+    next: ['POST', '/me/player/next'],
+    previous: ['POST', '/me/player/previous'],
+  };
+  const m = map[req.params.action];
+  if (!m) return res.status(400).json({ ok: false, error: 'bad action' });
+  try {
+    const tok = await getAccessToken(env);
+    const r = await fetch(`https://api.spotify.com/v1${m[1]}`, {
+      method: m[0], headers: { Authorization: `Bearer ${tok}` },
+    });
+    res.json({ ok: r.ok || r.status === 204, status: r.status });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 app.get('/j', async (_req, res) => {
   let url = currentJoinUrl();
   if (!url) { try { url = (await getState(env)).jam?.joinUrl; } catch {} }

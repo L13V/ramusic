@@ -243,3 +243,27 @@ body.is-idle #qr-box{animation:idlePulse 2.4s ease-in-out infinite}
   .su-info{display:flex;flex-direction:column;align-items:center}
   .su-steps{text-align:left}
 }
+
+/* ── Touch transport controls (Promethean panel / any touchscreen) ── */
+.controls{
+  display:flex;align-items:center;gap:clamp(14px,1.6vw,26px);
+  margin-top:clamp(10px,1.4vw,22px);
+  user-select:none;-webkit-user-select:none;
+}
+.ctl{
+  width:clamp(52px,4.4vw,68px);height:clamp(52px,4.4vw,68px);
+  border-radius:50%;border:1px solid var(--panel-brd);
+  background:var(--panel);color:var(--fg);
+  display:grid;place-items:center;cursor:pointer;
+  touch-action:manipulation;                 /* no double-tap zoom delay */
+  transition:transform .08s ease, background .15s ease;
+}
+.ctl svg{width:44%;height:44%;fill:currentColor;pointer-events:none}
+.ctl:active{transform:scale(.92);background:rgba(255,255,255,.16)}
+.ctl-main{
+  width:clamp(64px,5.6vw,86px);height:clamp(64px,5.6vw,86px);
+  background:var(--fg);color:#000;border:none;
+  box-shadow:0 10px 30px rgba(0,0,0,.45);
+}
+.ctl-main:active{transform:scale(.92);background:#fff}
+body.is-idle .controls{opacity:.35}

@@ -56,6 +56,19 @@
           <h2 id="artist">Start the music on Spotify</h2>
           <div id="scrub"><div id="scrub-fill"></div></div>
           <div id="times"><span id="t-cur">0:00</span><span id="t-dur">0:00</span></div>
+          <!-- Touch transport controls (Promethean/any touchscreen or mouse) -->
+          <div id="controls" class="controls">
+            <button class="ctl" id="ctl-prev" aria-label="Previous">
+              <svg viewBox="0 0 24 24"><path d="M6 5h2v14H6zM20 5v14L9.5 12z"/></svg>
+            </button>
+            <button class="ctl ctl-main" id="ctl-play" aria-label="Play or pause">
+              <svg id="ic-play" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+              <svg id="ic-pause" viewBox="0 0 24 24" style="display:none"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>
+            </button>
+            <button class="ctl" id="ctl-next" aria-label="Skip">
+              <svg viewBox="0 0 24 24"><path d="M16 5h2v14h-2zM4 5v14l10.5-7z"/></svg>
+            </button>
+          </div>
           <div id="vol" class="vol" hidden>
             <button class="vol-btn" id="vol-down" aria-label="Volume down">‹</button>
             <span class="vol-ic">🔊</span>
