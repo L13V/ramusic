@@ -1,0 +1,32 @@
+// RAMTECH OS boot splash: the ram logo centered on black with a soft pulse.
+Window.SetBackgroundTopColor(0.0, 0.0, 0.0);
+Window.SetBackgroundBottomColor(0.0, 0.0, 0.0);
+
+logo.image = Image("logo.png");
+// Scale the logo to ~28% of screen width, keeping aspect.
+target_w = Window.GetWidth() * 0.28;
+scale = target_w / logo.image.GetWidth();
+logo.scaled = logo.image.Scale(target_w, logo.image.GetHeight() * scale);
+logo.sprite = Sprite(logo.scaled);
+logo.sprite.SetX(Window.GetWidth() / 2 - logo.scaled.GetWidth() / 2);
+logo.sprite.SetY(Window.GetHeight() / 2 - logo.scaled.GetHeight() / 2);
+
+// Gentle opacity pulse so the screen doesn't look frozen.
+counter = 0;
+fun refresh_callback() {
+  counter++;
+  op = 0.72 + 0.28 * Math.Sin(counter / 25);
+  logo.sprite.SetOpacity(op);
+}
+Plymouth.SetRefreshFunction(refresh_callback);
+
+// Show boot status messages subtly under the logo (e.g. fsck progress).
+message.sprite = Sprite();
+message.sprite.SetPosition(Window.GetWidth() * 0.5, Window.GetHeight() * 0.9, 1);
+fun message_callback(text) {
+  msg = Image.Text(text, 0.6, 0.67, 0.71);
+  message.sprite.SetImage(msg);
+  message.sprite.SetX(Window.GetWidth() / 2 - msg.GetWidth() / 2);
+}
+Plymouth.SetUpdateStatusFunction(message_callback);
+Plymouth.SetMessageFunction(message_callback);

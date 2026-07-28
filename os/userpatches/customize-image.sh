@@ -123,6 +123,29 @@ cp "$OVERLAY/systemd/ramtech-ota-check.timer" /etc/systemd/system/
 systemctl enable spotify-tv-jam ramtech-admin ramtech-firstboot
 # (ramtech-ota-check.timer ships disabled; toggled from the admin UI)
 
+# ── 6b. Boot splash: RAMTECH ram logo via Plymouth ───────────
+apt-get install -y --no-install-recommends plymouth plymouth-themes
+mkdir -p /usr/share/plymouth/themes/ramtech
+cp "$OVERLAY/branding/ramtech.plymouth" /usr/share/plymouth/themes/ramtech/
+cp "$OVERLAY/branding/ramtech.script" /usr/share/plymouth/themes/ramtech/
+# The splash image is the same ram logo the dashboard uses — no duplicate asset.
+cp "$DEST/app/public/ramtech-logo.png" /usr/share/plymouth/themes/ramtech/logo.png
+plymouth-set-default-theme ramtech
+update-initramfs -u || echo "!!! initramfs update failed — splash will start late (post-initrd)"
+# Quiet the kernel console + ask for the splash.
+SPLASH_ARGS="quiet splash loglevel=2 vt.global_cursor_default=0 plymouth.ignore-serial-consoles"
+if [ -f /boot/armbianEnv.txt ]; then
+  if grep -q '^extraargs=' /boot/armbianEnv.txt; then
+    sed -i "s/^extraargs=.*/& $SPLASH_ARGS/" /boot/armbianEnv.txt
+  else
+    echo "extraargs=$SPLASH_ARGS" >> /boot/armbianEnv.txt
+  fi
+elif [ -f /boot/extlinux/extlinux.conf ]; then
+  sed -i "s/^\(\s*append\s.*\)$/\1 $SPLASH_ARGS/" /boot/extlinux/extlinux.conf
+else
+  echo "!!! No armbianEnv.txt or extlinux.conf — splash args not applied"
+fi
+
 # ── 7. Branding ──────────────────────────────────────────────
 echo ramtech > /etc/hostname
 if grep -q '^127\.0\.1\.1' /etc/hosts; then

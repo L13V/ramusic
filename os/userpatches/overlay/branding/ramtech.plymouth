@@ -1,0 +1,8 @@
+[Plymouth Theme]
+Name=RAMTECH
+Description=RAMTECH OS boot splash — ram logo on black
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/ramtech
+ScriptFile=/usr/share/plymouth/themes/ramtech/ramtech.script
