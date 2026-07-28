@@ -60,8 +60,11 @@ rm -f /root/.not_logged_in_yet               # disable the first-login wizard
 mkdir -p /etc/systemd/system/getty@tty1.service.d
 cp "$OVERLAY/systemd/getty-autologin.conf" /etc/systemd/system/getty@tty1.service.d/autologin.conf
 
-install -o "$RAMTECH_USER" -g "$RAMTECH_USER" -m 0755 "$OVERLAY/kiosk/xinitrc" "/home/$RAMTECH_USER/.xinitrc"
-install -o "$RAMTECH_USER" -g "$RAMTECH_USER" -m 0644 "$OVERLAY/kiosk/bash_profile" "/home/$RAMTECH_USER/.bash_profile"
+# The final image ships with an EMPTY /home (Armbian's image rsync excludes it),
+# so the session files go into /etc/skel; ramtech-firstboot.service creates
+# /home/ramtech from skel on first boot (see overlay/systemd/).
+install -m 0755 "$OVERLAY/kiosk/xinitrc" /etc/skel/.xinitrc
+install -m 0644 "$OVERLAY/kiosk/bash_profile" /etc/skel/.bash_profile
 
 # ── 5. App payload: install the latest GitHub release (same path as OTA) ──
 mkdir -p "$ROOT/releases" "$ROOT/data/app" "$ROOT/data/admin" "$ROOT/ota" "$ROOT/bin"
@@ -114,9 +117,10 @@ chown -R "$RAMTECH_USER":"$RAMTECH_USER" "$ROOT/data/app" "$ROOT/data/.env" "$RO
 # ── 6. Services ──────────────────────────────────────────────
 cp "$OVERLAY/systemd/spotify-tv-jam.service" /etc/systemd/system/
 cp "$OVERLAY/systemd/ramtech-admin.service" /etc/systemd/system/
+cp "$OVERLAY/systemd/ramtech-firstboot.service" /etc/systemd/system/
 cp "$OVERLAY/systemd/ramtech-ota-check.service" /etc/systemd/system/
 cp "$OVERLAY/systemd/ramtech-ota-check.timer" /etc/systemd/system/
-systemctl enable spotify-tv-jam ramtech-admin
+systemctl enable spotify-tv-jam ramtech-admin ramtech-firstboot
 # (ramtech-ota-check.timer ships disabled; toggled from the admin UI)
 
 # ── 7. Branding ──────────────────────────────────────────────
