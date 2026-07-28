@@ -98,7 +98,11 @@ function pickJoinUrl(session) {
     typeof session.join_session_url === 'string' && session.join_session_url.includes('/sessions/join/')
       ? session.join_session_url.split('/').pop() : null;
   const token = session.join_session_token || fromUri || fromHm || session.session_id;
-  if (token) return `https://open.spotify.com/socialsession/${token}`;
+  // The share params matter: ssp=1 (+ share utm) is what makes the socialsession
+  // page hand off into the app-link chain (open.spotify.com -> spotify.app.link
+  // -> Spotify app) on iPhones. A bare /socialsession/<token> can dead-end in
+  // Safari. Format captured from a real "share Jam" link.
+  if (token) return `https://open.spotify.com/socialsession/${token}?utm_source=share-options-sheet&utm_medium=share-link&ssp=1`;
 
   // Only fall back to links that are already public http(s).
   for (const u of [session.join_session_url, session.join_url, session.session_url]) {
