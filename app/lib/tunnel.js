@@ -27,48 +27,75 @@ export async function startTunnel(port) {
   state.status = 'starting';
   state.error = null;
 
-  try {
-    const opts = {
-      port: Number(port) || 3000,
-    };
-    if (process.env.LOCALTUNNEL_SUBDOMAIN) {
-      opts.subdomain = process.env.LOCALTUNNEL_SUBDOMAIN;
-    }
-    if (process.env.LOCALTUNNEL_HOST) {
-      opts.host = process.env.LOCALTUNNEL_HOST;
-    }
+  const timeoutMs = 10_000; // 10s timeout ensures TV never hangs on "preparing setup link"
 
-    const tunnel = await localtunnel(opts);
-    tunnelInstance = tunnel;
-    state.url = tunnel.url;
-    state.status = 'up';
-    console.log(`      Public setup link: ${state.url}/setup (via localtunnel:443, no SSH)`);
+  return new Promise(async (resolve) => {
+    let settled = false;
 
-    tunnel.on('error', (err) => {
-      console.warn(`  ⚠  localtunnel error: ${err.message}`);
-      if (tunnelInstance === tunnel) {
-        state.error = err.message;
-        state.status = 'off';
-        state.url = null;
-        tunnelInstance = null;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      state.status = 'error';
+      state.error = 'timed out waiting for localtunnel';
+      console.warn('  ⚠  localtunnel connection timed out, falling back to local network');
+      try { tunnelInstance?.close(); } catch {}
+      tunnelInstance = null;
+      resolve(null);
+    }, timeoutMs);
+
+    try {
+      const opts = {
+        port: Number(port) || 3000,
+        // Crucial: localtunnel defaults internally to localtunnel.me which is dead/unresponsive.
+        // We target https://loca.lt directly.
+        host: process.env.LOCALTUNNEL_HOST || 'https://loca.lt',
+      };
+      if (process.env.LOCALTUNNEL_SUBDOMAIN) {
+        opts.subdomain = process.env.LOCALTUNNEL_SUBDOMAIN;
       }
-    });
 
-    tunnel.on('close', () => {
-      if (tunnelInstance === tunnel) {
-        state.status = 'off';
-        state.url = null;
-        tunnelInstance = null;
+      const tunnel = await localtunnel(opts);
+      if (settled) {
+        try { tunnel.close(); } catch {}
+        return;
       }
-    });
 
-    return state.url;
-  } catch (err) {
-    state.status = 'error';
-    state.error = err.message;
-    console.warn(`  ⚠  localtunnel failed to start: ${err.message}`);
-    return null;
-  }
+      settled = true;
+      clearTimeout(timer);
+      tunnelInstance = tunnel;
+      state.url = tunnel.url;
+      state.status = 'up';
+      console.log(`      Public setup link: ${state.url}/setup (via localtunnel:443, no SSH)`);
+
+      tunnel.on('error', (err) => {
+        console.warn(`  ⚠  localtunnel error: ${err.message}`);
+        if (tunnelInstance === tunnel) {
+          state.error = err.message;
+          state.status = 'off';
+          state.url = null;
+          tunnelInstance = null;
+        }
+      });
+
+      tunnel.on('close', () => {
+        if (tunnelInstance === tunnel) {
+          state.status = 'off';
+          state.url = null;
+          tunnelInstance = null;
+        }
+      });
+
+      resolve(state.url);
+    } catch (err) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      state.status = 'error';
+      state.error = err.message;
+      console.warn(`  ⚠  localtunnel failed to start: ${err.message}`);
+      resolve(null);
+    }
+  });
 }
 
 export function stopTunnel() {

@@ -24,6 +24,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const env = process.env;
 const PORT = Number(env.PORT) || 3000;
 const HTTPS_PORT = Number(env.HTTPS_PORT) || PORT + 443; // 3443 by default
+const bootTime = Date.now();
 
 const app = express();
 app.set('trust proxy', true); // reverse proxy / tunnel sits in front during setup
@@ -109,7 +110,10 @@ app.get('/api/state', async (_req, res) => {
     if (!isDemo() && !isConfigured(env)) {
       // While the public link is still being provisioned, tell the TV to show
       // a "preparing" message instead of a QR that would change seconds later.
-      const pending = tunnelEnabled() && tunnelState().status === 'starting';
+      // Capped at 8s so the TV never hangs permanently if offline or tunnel is slow.
+      const pending = tunnelEnabled() &&
+                      tunnelState().status === 'starting' &&
+                      (Date.now() - bootTime < 8_000);
       const url = pending ? null : `${setupOrigin()}/setup`;
       res.json({
         ok: true,
