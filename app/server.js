@@ -58,7 +58,7 @@ const clientConfig = () => ({
   canPlay: !isDemo() && isConfigured(env),
 });
 
-// Keep a public localhost.run tunnel up the whole time (not just for setup): it's
+// Keep a public localtunnel up the whole time (not just for setup): it's
 // the address the phone uses for sign-in AND the one the Jam QR points at, so
 // scanners can reach it from anywhere — not only the TV's local network. The TV
 // itself stays a plain web client on localhost. Set TUNNEL=false to disable
@@ -125,7 +125,7 @@ app.get('/api/state', async (_req, res) => {
       isDemo() ? Promise.resolve(demoState()) : getState(env),
       weatherP,
     ]);
-    // The QR points at our /j redirect on the PUBLIC base (localhost.run tunnel when
+    // The QR points at our /j redirect on the PUBLIC base (localtunnel when
     // up, else LAN) so scanning it starts playback on the TV and forwards into
     // the live Jam — reachable from anywhere, not just the TV's Wi-Fi. Only shown
     // once a Jam exists.
@@ -662,7 +662,7 @@ const httpServer = app.listen(PORT, async () => {
   // Keep a public tunnel up the whole session — it's the address the Jam QR uses
   // so phones can scan it from anywhere (not just the local network).
   if (tunnelEnabled() && !isDemo()) {
-    console.log('      Opening a public localhost.run tunnel on port 443 (used for setup + the Jam QR)…');
+    console.log('      Opening a public localtunnel on port 443 (used for setup + the Jam QR)…');
     ensureTunnel();
   }
   console.log('');
