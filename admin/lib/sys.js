@@ -85,7 +85,7 @@ export async function status() {
 }
 
 // ── Services ─────────────────────────────────────────────────
-const mockSvc = Object.fromEntries(UNITS.map(u => [u, { active: 'active', enabled: 'enabled' }]));
+const mockSvc = Object.fromEntries(UNITS.map(u => [u, { active: 'active', enabled: 'enabled', installed: true }]));
 
 export async function services() {
   const out = {};
@@ -93,7 +93,10 @@ export async function services() {
     if (MOCK) { out[u] = mockSvc[u]; continue; }
     const [act, en] = await Promise.all([
       run('systemctl', ['is-active', u]), run('systemctl', ['is-enabled', u])]);
-    out[u] = { active: act.stdout.trim() || 'unknown', enabled: en.stdout.trim() || 'unknown' };
+    const activeStr = act.stdout.trim() || 'unknown';
+    const enabledStr = en.stdout.trim() || 'unknown';
+    const installed = enabledStr !== 'not-found' && activeStr !== 'not-found';
+    out[u] = { active: activeStr, enabled: enabledStr, installed };
   }
   return out;
 }
@@ -103,6 +106,10 @@ export async function serviceAction(unit, action) {
   if (MOCK) {
     mockSvc[unit].active = action === 'stop' ? 'inactive' : 'active';
     return { ok: true, mock: true };
+  }
+  const en = await run('systemctl', ['is-enabled', unit]);
+  if (en.stdout.trim() === 'not-found') {
+    return { ok: false, error: `Service ${unit} is not installed on this system` };
   }
   const r = await run('systemctl', [action, unit]);
   return { ok: r.ok, error: r.ok ? undefined : r.stderr.trim() };
@@ -114,6 +121,10 @@ export async function logs(unit, lines = 200) {
   lines = Math.min(Math.max(parseInt(lines, 10) || 200, 10), 2000);
   if (MOCK) return `-- mock journal for ${unit} --\n` +
     Array.from({ length: 8 }, (_, i) => `2026-07-27T21:0${i}:00 ramtech ${unit}[123]: mock log line ${i + 1}`).join('\n');
+  const en = await run('systemctl', ['is-enabled', unit]);
+  if (en.stdout.trim() === 'not-found') {
+    return `-- service ${unit} is not installed on this system --`;
+  }
   const r = await run('journalctl', ['-u', unit, '-n', String(lines), '--no-pager', '-o', 'short-iso']);
   return r.stdout || r.stderr;
 }

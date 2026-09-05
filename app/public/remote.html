@@ -108,7 +108,8 @@ function connectWebSocket() {
         const msg = JSON.parse(ev.data);
         if (msg.type === 'frame' && msg.data) {
           lastSeq = msg.seq || (lastSeq + 1);
-          screen.src = 'data:image/png;base64,' + msg.data;
+          const mime = msg.mimeType || 'image/jpeg';
+          screen.src = `data:${mime};base64,` + msg.data;
           if (screen.style.display !== 'block') {
             screen.style.display = 'block';
             ph.style.display = 'none';

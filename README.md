@@ -43,14 +43,14 @@ from any device on the network) and full-screen it.
 ### 2. Sign in — scan the QR on the TV 📱
 The first time it runs, the TV shows a big **"Scan to set up"** QR code.
 While it boots, the server opens a temporary **public setup link** through a
-Cloudflare quick tunnel (`https://<random>.trycloudflare.com` — cloudflared is
-auto-downloaded on first use); the QR points at it. Scan it with your phone
+**localhost.run tunnel** (`https://<random>.lhr.life` on port 443 — uses standard
+OpenSSH, zero external binary downloads); the QR points at it. Scan it with your phone
 and follow the steps on the page that opens:
 
 1. **Spotify app credentials** — create an app in the
    [Spotify Developer Dashboard](https://developer.spotify.com/dashboard),
    add the **Redirect URI(s)** shown on the setup page (copy buttons
-   provided — the trycloudflare one is first), and paste the app's
+   provided — the localhost.run one is first), and paste the app's
    **Client ID**. No client secret needed (sign-in uses PKCE).
 2. **Sign in with Spotify** — tap the button, approve on Spotify, and you
    bounce straight back. The server exchanges and stores the tokens itself
@@ -63,7 +63,7 @@ You can revisit the setup page any time at `http://127.0.0.1:3000/setup` on
 the machine itself (or `https://<your-ip>:3443/setup` on the LAN) to
 reconnect, disconnect, or add the Jam cookie.
 
-> **Notes on the tunnel:** the trycloudflare URL is random on every server
+> **Notes on the tunnel:** the localhost.run URL is random on every server
 > start, so the redirect URI you register is the one shown *at that moment* —
 > that's fine, setup is a one-time thing. Anyone who guesses the random URL
 > during setup could see the (not-yet-signed-in) setup page; it auto-closes
@@ -190,7 +190,7 @@ sudo reboot
 - adds a **desktop auto-start** that opens Chromium full-screen on the dashboard (`deploy/kiosk.sh`).
 
 Logs: `journalctl -u spotify-tv-jam -f`. It runs **entirely on the box** — the
-Cloudflare tunnel is only the public address the Jam QR points at.
+localhost.run tunnel is only the public address the Jam QR points at.
 
 **Branding:** drop your logo at `public/ramtech-logo.png`.
 
@@ -219,7 +219,7 @@ it again (`JAM_PLAY_ON_GUEST=true` controls all of this).
 ```
 app/server.js       Express server + /api/state + setup/OAuth routes + server-side QR
 app/lib/auth.js     Sign-in flow (PKCE), token store (.data/auth.json), self-signed TLS
-app/lib/tunnel.js   Cloudflare quick tunnel (public address for setup + the Jam QR)
+app/lib/tunnel.js   localhost.run SSH reverse tunnel (public address on port 443 for setup + Jam QR)
 app/lib/spotify.js  Web API (now playing, queue) + Jam session + join-URL builder
 app/lib/webtoken.js Mints the Jam web token via the logged-in browser (no TOTP forgery)
 app/lib/remote.js   Phone-driven remote Spotify sign-in (CDP screen-share) + browser finder
@@ -228,7 +228,7 @@ app/lib/demo.js     Fake data for DEMO=true
 app/public/         The TV UI (index.html, style.css, app.js), player.js
                     (Web Playback SDK), and setup.html (OTP-gated phone sign-in)
 app/deploy/kiosk.sh Kiosk browser launcher (used by the OS image + install.sh)
-app/.data/          Generated at runtime: tokens, TLS cert, cloudflared (gitignored)
+app/.data/          Generated at runtime: tokens, TLS cert (gitignored)
 admin/              RAMTECH device manager web UI (port 8080) — see below
 os/                 RAMTECH OS live-USB image build (Debian live-build) — see below
 os/overlay/         What gets baked into the image: systemd units, OTA scripts,

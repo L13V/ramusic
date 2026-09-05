@@ -27,6 +27,7 @@ x11-xserver-utils
 unclutter
 fonts-noto-core
 fonts-noto-color-emoji
+x11vnc
 
 # Audio. The x86 panel plays through the browser (Widevine), so a working
 # PipeWire graph is all that is needed.

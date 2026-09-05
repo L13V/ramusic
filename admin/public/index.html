@@ -61,6 +61,12 @@ pre{background:#07090c;border:1px solid var(--brd);border-radius:10px;padding:14
 .toggle.on{background:var(--accent)}
 .toggle i{position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:99px;background:#fff;transition:.2s}
 .toggle.on i{left:21px}
+#vncModal{position:fixed;inset:0;background:rgba(5,7,10,.95);backdrop-filter:blur(14px);z-index:9999;display:flex;flex-direction:column}
+#vncTopBar{display:flex;align-items:center;gap:12px;padding:12px 22px;background:#10141c;border-bottom:1px solid var(--brd)}
+#vncCanvasWrap{flex:1;position:relative;background:#000;display:flex;align-items:center;justify-content:center;overflow:hidden}
+#vncCanvasWrap canvas{max-width:100%;max-height:100%;object-fit:contain}
+.slider-wrap{display:flex;align-items:center;gap:12px;width:100%}
+.slider-wrap input[type=range]{flex:1;accent-color:var(--accent);height:6px;border-radius:99px;cursor:pointer}
 </style>
 </head>
 <body>
@@ -145,6 +151,35 @@ pre{background:#07090c;border:1px solid var(--brd);border-radius:10px;padding:14
     </div>
 
     <div class="card">
+      <h2>Audio Output</h2>
+      <div id="audioOutputs"></div>
+      <div id="audioControls" class="hidden" style="margin-top:14px;padding-top:12px;border-top:1px solid var(--brd)">
+        <div class="inline" style="justify-content:space-between;margin-bottom:8px">
+          <span style="font-size:12px;color:var(--dim)">Master Volume</span>
+          <span id="volLabel" style="font-size:12px;font-weight:700">80%</span>
+        </div>
+        <div class="slider-wrap">
+          <input type="range" id="volSlider" min="0" max="100" value="80" oninput="onVolInput(this.value)" onchange="onVolChange(this.value)">
+          <button id="muteBtn" onclick="toggleMute()" style="padding:6px 12px;font-size:12px;flex:none">Mute</button>
+        </div>
+      </div>
+      <div id="audioMsg" class="msg"></div>
+    </div>
+
+    <div class="card">
+      <h2>Remote Desktop</h2>
+      <div class="row" style="border:0;padding-top:0">
+        <div class="name">TV Display (:0)<div class="sub" id="vncSub">x11vnc + noVNC HTML5</div></div>
+        <div class="acts">
+          <button class="primary" onclick="openRemoteDesktop()">Open Viewer</button>
+        </div>
+      </div>
+      <div class="msg" style="font-size:12px;color:var(--dim);margin-top:8px">
+        Live remote control of the physical TV kiosk screen. Zero install needed.
+      </div>
+    </div>
+
+    <div class="card">
       <h2>System</h2>
       <div class="row" style="border:0;padding-top:0">
         <div class="name" style="font-weight:500;font-size:14px">OS packages (apt upgrade)</div>
@@ -183,6 +218,30 @@ pre{background:#07090c;border:1px solid var(--brd);border-radius:10px;padding:14
 
 </main>
 </div>
+
+<div id="vncModal" class="hidden">
+  <div id="vncTopBar">
+    <div style="font-weight:700;font-size:14px;display:flex;align-items:center;gap:8px">
+      <span class="dot on"></span> TV Display (:0)
+    </div>
+    <span id="vncStateBadge" class="badge">Connecting…</span>
+    <div style="margin-left:auto;display:flex;gap:10px;align-items:center">
+      <button onclick="toggleVncFullscreen()" title="Toggle Fullscreen">⛶ Fullscreen</button>
+      <button onclick="reconnectVnc()" title="Reconnect">⟳ Reconnect</button>
+      <button class="danger" onclick="closeRemoteDesktop()">✕ Close</button>
+    </div>
+  </div>
+  <div id="vncCanvasWrap"></div>
+</div>
+
+<script type="module">
+  try {
+    const { default: RFB } = await import('/novnc/core/rfb.js');
+    window.RFB = RFB;
+  } catch (e) {
+    console.warn('noVNC loader:', e);
+  }
+</script>
 
 <script>
 const $ = (id) => document.getElementById(id);
@@ -236,15 +295,41 @@ const SVC_LABELS = { 'spotify-tv-jam': 'Jam dashboard', 'ramtech-admin': 'Device
 async function refreshServices() {
   try {
     const s = await api('/services');
-    $('services').innerHTML = Object.entries(s).map(([u, st]) => `
+    $('services').innerHTML = Object.entries(s).map(([u, st]) => {
+      const isInstalled = st.installed !== false && st.enabled !== 'not-found';
+      const isUp = st.active === 'active';
+      const dotCls = !isInstalled ? '' : (isUp ? 'on' : 'off');
+      let subText = `${u} · ${st.active}, ${st.enabled}`;
+      if (!isInstalled) {
+        subText = u === 'raspotify'
+          ? `${u} · not installed (Chrome Web Playback used on x86)`
+          : `${u} · not installed`;
+      }
+      const actionsHtml = isInstalled ? `
+        <button onclick="svc('${u}','restart')">Restart</button>
+        <button onclick="svc('${u}','${isUp ? 'stop' : 'start'}')">${isUp ? 'Stop' : 'Start'}</button>
+      ` : `<span class="badge">Not Installed</span>`;
+
+      return `
       <div class="row">
-        <div class="dot ${st.active === 'active' ? 'on' : 'off'}"></div>
-        <div class="name">${SVC_LABELS[u] || u}<div class="sub">${u} · ${st.active}, ${st.enabled}</div></div>
+        <div class="dot ${dotCls}"></div>
+        <div class="name">${SVC_LABELS[u] || u}<div class="sub">${subText}</div></div>
         <div class="acts">
-          <button onclick="svc('${u}','restart')">Restart</button>
-          <button onclick="svc('${u}','${st.active === 'active' ? 'stop' : 'start'}')">${st.active === 'active' ? 'Stop' : 'Start'}</button>
+          ${actionsHtml}
         </div>
-      </div>`).join('');
+      </div>`;
+    }).join('');
+
+    // Update logUnit selector to annotate uninstalled units
+    const raspOpt = document.querySelector('#logUnit option[value="raspotify"]');
+    if (raspOpt && s.raspotify && (s.raspotify.installed === false || s.raspotify.enabled === 'not-found')) {
+      raspOpt.textContent = 'raspotify (not installed)';
+      raspOpt.disabled = true;
+      if ($('logUnit').value === 'raspotify') $('logUnit').value = 'spotify-tv-jam';
+    } else if (raspOpt) {
+      raspOpt.textContent = 'raspotify (audio player)';
+      raspOpt.disabled = false;
+    }
   } catch {}
 }
 async function svc(u, a) {
@@ -374,12 +459,184 @@ async function loadLogs() {
   $('logOut').scrollTop = $('logOut').scrollHeight;
 }
 
+// ── Audio ──
+let currentDefaultSink = '';
+let currentSinks = [];
+const escapeHtml = (s) => String(s || '').replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+
+async function refreshAudio() {
+  try {
+    const r = await api('/audio');
+    if (!r.ok) return;
+    currentDefaultSink = r.defaultSink || '';
+    currentSinks = r.sinks || [];
+    $('audioOutputs').innerHTML = currentSinks.map(s => {
+      const isDef = s.name === currentDefaultSink || s.isDefault;
+      return `
+        <div class="row">
+          <div class="dot ${isDef ? 'on' : ''}"></div>
+          <div class="name">
+            ${escapeHtml(s.description)}
+            <div class="sub">${escapeHtml(s.name)} ${isDef ? '· <b>Default</b>' : ''}</div>
+          </div>
+          <div class="acts">
+            ${isDef 
+              ? '<span class="badge up">Active</span>' 
+              : `<button onclick="setAudioDefault('${escapeHtml(s.name)}')">Select</button>`}
+          </div>
+        </div>`;
+    }).join('');
+
+    const defSinkObj = currentSinks.find(s => s.name === currentDefaultSink) || currentSinks[0];
+    if (defSinkObj) {
+      $('audioControls').classList.remove('hidden');
+      $('volSlider').value = defSinkObj.volume ?? 80;
+      $('volLabel').textContent = `${defSinkObj.volume ?? 80}%`;
+      $('muteBtn').textContent = defSinkObj.mute ? 'Unmute 🔇' : 'Mute 🔊';
+      $('muteBtn').className = defSinkObj.mute ? 'danger' : '';
+    }
+  } catch {}
+}
+
+async function setAudioDefault(name) {
+  $('audioMsg').className = 'msg';
+  $('audioMsg').textContent = 'Switching audio output…';
+  const r = await post('/audio/default', { sink: name });
+  if (r.ok) {
+    $('audioMsg').className = 'msg ok';
+    $('audioMsg').textContent = 'Audio switched ✓';
+    setTimeout(() => { $('audioMsg').textContent = ''; }, 3000);
+    refreshAudio();
+  } else {
+    $('audioMsg').className = 'msg err';
+    $('audioMsg').textContent = r.error || 'Failed to switch output';
+  }
+}
+
+function onVolInput(val) {
+  $('volLabel').textContent = `${val}%`;
+}
+function onVolChange(val) {
+  if (!currentDefaultSink) return;
+  post('/audio/volume', { sink: currentDefaultSink, volume: parseInt(val, 10) });
+}
+async function toggleMute() {
+  const defSinkObj = currentSinks.find(s => s.name === currentDefaultSink) || currentSinks[0];
+  if (!defSinkObj) return;
+  const newMute = !defSinkObj.mute;
+  await post('/audio/mute', { sink: defSinkObj.name, mute: newMute });
+  refreshAudio();
+}
+
+// ── Remote Desktop (noVNC) ──
+let rfb = null;
+let vncMock = false;
+
+async function openRemoteDesktop() {
+  $('vncModal').classList.remove('hidden');
+  document.body.style.overflow = 'hidden';
+  connectVnc();
+}
+
+function closeRemoteDesktop() {
+  if (rfb) {
+    try { rfb.disconnect(); } catch {}
+    rfb = null;
+  }
+  $('vncCanvasWrap').innerHTML = '';
+  $('vncModal').classList.add('hidden');
+  document.body.style.overflow = '';
+}
+
+async function connectVnc() {
+  const target = $('vncCanvasWrap');
+  target.innerHTML = '';
+  $('vncStateBadge').textContent = 'Connecting…';
+  $('vncStateBadge').className = 'badge';
+
+  try {
+    const st = await api('/vnc/status');
+    vncMock = !!st.mock;
+  } catch {}
+
+  if (vncMock) {
+    $('vncStateBadge').textContent = 'Mock Screen (:0)';
+    $('vncStateBadge').className = 'badge up';
+    target.innerHTML = `
+      <div style="text-align:center;padding:30px;color:var(--dim);max-width:540px">
+        <div style="font-size:48px;margin-bottom:12px">🖥</div>
+        <div style="font-size:18px;font-weight:700;color:var(--fg);margin-bottom:8px">Mock Remote Desktop Active</div>
+        <p style="font-size:13px;line-height:1.5;margin-bottom:18px">
+          You are running in development / mock mode. On RAMTECH OS hardware (Debian/Linux),
+          x11vnc transmits the live TV display (:0) directly over WebSockets into this viewer.
+        </p>
+        <div style="background:#141922;border:1px solid var(--brd);border-radius:10px;padding:14px;font-family:monospace;font-size:12px;color:var(--accent)">
+          DISPLAY=:0 · x11vnc :5900 · noVNC RFB ✓
+        </div>
+      </div>`;
+    return;
+  }
+
+  if (!window.RFB) {
+    $('vncStateBadge').textContent = 'Loading noVNC…';
+    try {
+      const { default: RFB } = await import('/novnc/core/rfb.js');
+      window.RFB = RFB;
+    } catch (e) {
+      $('vncStateBadge').textContent = 'noVNC load error';
+      $('vncStateBadge').className = 'badge err';
+      target.innerHTML = `<div class="msg err">Failed to load noVNC: ${escapeHtml(e.message)}</div>`;
+      return;
+    }
+  }
+
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const url = `${proto}//${location.host}/ws/vnc`;
+
+  try {
+    rfb = new window.RFB(target, url, {
+      credentials: { password: '' }
+    });
+    rfb.scaleViewport = true;
+    rfb.resizeSession = false;
+    rfb.viewOnly = false;
+    rfb.clipViewport = false;
+
+    rfb.addEventListener('connect', () => {
+      $('vncStateBadge').textContent = 'Connected ✓';
+      $('vncStateBadge').className = 'badge up';
+    });
+    rfb.addEventListener('disconnect', (e) => {
+      $('vncStateBadge').textContent = e.detail?.clean ? 'Disconnected' : 'Connection closed';
+      $('vncStateBadge').className = 'badge';
+    });
+  } catch (e) {
+    $('vncStateBadge').textContent = 'Failed';
+    $('vncStateBadge').className = 'badge err';
+    target.innerHTML = `<div class="msg err">VNC connection error: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function reconnectVnc() {
+  if (rfb) { try { rfb.disconnect(); } catch {} rfb = null; }
+  connectVnc();
+}
+
+function toggleVncFullscreen() {
+  const elem = $('vncModal');
+  if (!document.fullscreenElement) {
+    elem.requestFullscreen?.().catch(() => {});
+  } else {
+    document.exitFullscreen?.().catch(() => {});
+  }
+}
+
 // ── Boot ──
 let pollTimer = null;
 function boot() {
-  refreshStatus(); refreshServices(); refreshNet(); loadUpdateSettings(); loadLogs();
+  refreshStatus(); refreshServices(); refreshNet(); loadUpdateSettings(); loadLogs(); refreshAudio();
   clearInterval(pollTimer);
-  pollTimer = setInterval(() => { refreshStatus(); refreshServices(); }, 10_000);
+  pollTimer = setInterval(() => { refreshStatus(); refreshServices(); refreshAudio(); }, 10_000);
 }
 (async () => {
   const s = await fetch('/api/session').then(r => r.json()).catch(() => ({}));

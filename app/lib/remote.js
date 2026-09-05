@@ -88,6 +88,7 @@ function cdp(wsUrl) {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(wsUrl);
     const pending = new Map();
+    const handlers = new Map();
     let id = 0;
     ws.onopen = () => resolve({
       send(method, params) {
@@ -99,6 +100,11 @@ function cdp(wsUrl) {
           catch (e) { clearTimeout(to); pending.delete(mid); rej(e); }
         });
       },
+      on(method, handler) {
+        if (!handlers.has(method)) handlers.set(method, new Set());
+        handlers.get(method).add(handler);
+        return () => handlers.get(method)?.delete(handler);
+      },
       close() { try { ws.close(); } catch {} },
     });
     ws.onerror = (e) => reject(new Error('CDP error: ' + (e?.message || 'ws')));
@@ -108,6 +114,10 @@ function cdp(wsUrl) {
       if (m.id && pending.has(m.id)) {
         const { res, rej, to } = pending.get(m.id); clearTimeout(to); pending.delete(m.id);
         m.error ? rej(new Error(m.error.message)) : res(m.result);
+      } else if (m.method && handlers.has(m.method)) {
+        for (const h of handlers.get(m.method)) {
+          try { h(m.params); } catch {}
+        }
       }
     };
   });
@@ -153,7 +163,7 @@ export function addRemoteSubscriber(ws) {
       type: 'frame',
       seq: session.seq,
       data: session.frame,
-      mimeType: 'image/png',
+      mimeType: session.mimeType || 'image/jpeg',
     }));
   }
   ws.on('message', async (data) => {
@@ -170,7 +180,7 @@ export function addRemoteSubscriber(ws) {
   });
 }
 
-/** Latest PNG frame as Buffer (or null). Supports ?since= for 304 caching. */
+/** Latest frame as Buffer (or null). Supports ?since= for 304 caching. */
 export const getFrame = (sinceSeq) => {
   if (!session?.frameBuffer) return null;
   if (sinceSeq != null && Number(sinceSeq) >= session.seq) {
@@ -179,7 +189,7 @@ export const getFrame = (sinceSeq) => {
   return {
     buffer: session.frameBuffer,
     seq: session.seq,
-    mimeType: 'image/png',
+    mimeType: session.mimeType || 'image/jpeg',
   };
 };
 
@@ -243,9 +253,10 @@ export async function startRemote({ startUrl, onCapture, isOauthDone, wantSpDc =
       // Look like an ordinary browser so reCAPTCHA doesn't keep challenging.
       '--disable-blink-features=AutomationControlled',
       '--disable-features=Translate,MediaRouter',
+      '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
       `--window-size=${VW},${VH}`,
     ];
-    // The phone only ever sees CDP screenshots, so headless Chromium serves
+    // The phone only ever sees CDP screencast frames, so headless Chromium serves
     // the remote just as well when there's no (working) display.
     if (headless) args.push('--headless=new', '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage');
     args.push(startUrl || LOGIN_URL);
@@ -308,6 +319,14 @@ export async function startRemote({ startUrl, onCapture, isOauthDone, wantSpDc =
   await conn.send('Network.enable').catch(() => {});
   await conn.send('Page.bringToFront').catch(() => {});
 
+  // Anti-detection script to pass Google reCAPTCHA
+  await conn.send('Page.addScriptToEvaluateOnNewDocument', {
+    source: `
+      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+      window.chrome = window.chrome || { runtime: {} };
+    `,
+  }).catch(() => {});
+
   // Track the REAL css viewport for input mapping (no device-metrics override —
   // that override is what made the window flicker and threw off clicks). Input
   // uses normalized 0..1 coords, so this maps them to page coordinates.
@@ -324,33 +343,70 @@ export async function startRemote({ startUrl, onCapture, isOauthDone, wantSpDc =
 
   setSessionStatus('live', 'Sign in — you are driving the PC browser.');
 
-  // Frame loop: capture PNG screenshots of the actual viewport.
-  // PNG is lossless and captures in ~30ms, rendering sharp text with zero JPEG ringing.
+  // Screencast stream: hardware-accelerated 30-60 FPS JPEG push directly from the compositor.
+  let screencastActive = false;
+  conn.on('Page.screencastFrame', (params) => {
+    screencastActive = true;
+    conn.send('Page.screencastFrameAck', { sessionId: params.sessionId }).catch(() => {});
+    if (session && session.conn === conn && params.data) {
+      session.frame = params.data;
+      session.frameBuffer = Buffer.from(params.data, 'base64');
+      session.mimeType = 'image/jpeg';
+      session.seq = (session.seq || 0) + 1;
+      session.frames++;
+      if (params.metadata?.deviceWidth && params.metadata?.deviceHeight) {
+        session.meta = { deviceWidth: params.metadata.deviceWidth, deviceHeight: params.metadata.deviceHeight };
+      }
+      broadcast({
+        type: 'frame',
+        seq: session.seq,
+        data: session.frame,
+        mimeType: 'image/jpeg',
+      });
+    }
+  });
+
+  try {
+    await conn.send('Page.startScreencast', {
+      format: 'jpeg',
+      quality: 80,
+      maxWidth: VW,
+      maxHeight: VH,
+      everyNthFrame: 1,
+    });
+    screencastActive = true;
+  } catch {
+    screencastActive = false;
+  }
+
+  // Fallback screenshot polling loop if screencast is unsupported
   (async () => {
     let tick = 0;
     while (session && session.conn === conn) {
-      try {
-        const r = await conn.send('Page.captureScreenshot', { format: 'png' });
-        if (r?.data && session && session.conn === conn) {
-          if (r.data !== session.frame) {
-            session.frame = r.data;
-            session.frameBuffer = Buffer.from(r.data, 'base64');
-            session.seq = (session.seq || 0) + 1;
-            session.frames++;
-            broadcast({
-              type: 'frame',
-              seq: session.seq,
-              data: session.frame,
-              mimeType: 'image/png',
-            });
+      if (!screencastActive) {
+        try {
+          const r = await conn.send('Page.captureScreenshot', { format: 'jpeg', quality: 80 });
+          if (r?.data && session && session.conn === conn) {
+            if (r.data !== session.frame) {
+              session.frame = r.data;
+              session.frameBuffer = Buffer.from(r.data, 'base64');
+              session.mimeType = 'image/jpeg';
+              session.seq = (session.seq || 0) + 1;
+              session.frames++;
+              broadcast({
+                type: 'frame',
+                seq: session.seq,
+                data: session.frame,
+                mimeType: 'image/jpeg',
+              });
+            }
           }
-        }
-      } catch { /* transient; keep going until conn swapped */ }
-      if ((++tick % 15) === 0) await refreshViewport(); // ~every 3s, in case it reflows
+        } catch {}
+      }
+      if ((++tick % 15) === 0) await refreshViewport();
 
-      // Sleep up to 150ms, or wake immediately on user interaction
       await new Promise((resolve) => {
-        const to = setTimeout(() => { nextWake = null; resolve(); }, 150);
+        const to = setTimeout(() => { nextWake = null; resolve(); }, screencastActive ? 500 : 150);
         nextWake = () => { clearTimeout(to); resolve(); };
       });
     }

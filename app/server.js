@@ -26,7 +26,7 @@ const PORT = Number(env.PORT) || 3000;
 const HTTPS_PORT = Number(env.HTTPS_PORT) || PORT + 443; // 3443 by default
 
 const app = express();
-app.set('trust proxy', true); // cloudflared sits in front during setup
+app.set('trust proxy', true); // reverse proxy / tunnel sits in front during setup
 app.use(express.json());
 app.use(express.static(join(__dirname, 'public')));
 
@@ -58,7 +58,7 @@ const clientConfig = () => ({
   canPlay: !isDemo() && isConfigured(env),
 });
 
-// Keep a public Cloudflare tunnel up the whole time (not just for setup): it's
+// Keep a public localhost.run tunnel up the whole time (not just for setup): it's
 // the address the phone uses for sign-in AND the one the Jam QR points at, so
 // scanners can reach it from anywhere — not only the TV's local network. The TV
 // itself stays a plain web client on localhost. Set TUNNEL=false to disable
@@ -125,7 +125,7 @@ app.get('/api/state', async (_req, res) => {
       isDemo() ? Promise.resolve(demoState()) : getState(env),
       weatherP,
     ]);
-    // The QR points at our /j redirect on the PUBLIC base (Cloudflare tunnel when
+    // The QR points at our /j redirect on the PUBLIC base (localhost.run tunnel when
     // up, else LAN) so scanning it starts playback on the TV and forwards into
     // the live Jam — reachable from anywhere, not just the TV's Wi-Fi. Only shown
     // once a Jam exists.
@@ -411,7 +411,7 @@ const SESSION_TTL = 30 * 60_000;  // once entered, changes stay unlocked 30 min
 
 // Direct request from the TV/host itself (not forwarded by the tunnel).
 function isLoopback(req) {
-  if (req.headers['cf-connecting-ip'] || req.headers['x-forwarded-for']) return false;
+  if (req.headers['cf-connecting-ip'] || req.headers['x-forwarded-for'] || req.headers['forwarded']) return false;
   const ip = String(req.ip || req.socket?.remoteAddress || '').replace('::ffff:', '');
   return ip === '127.0.0.1' || ip === '::1' || ip === 'localhost';
 }
@@ -562,7 +562,7 @@ app.get('/api/remote/frame', (req, res) => {
   if (frame.notModified) return res.status(304).end();
   res.set({
     'Cache-Control': 'no-cache, no-store, must-revalidate',
-    'Content-Type': 'image/png',
+    'Content-Type': frame.mimeType || 'image/jpeg',
     'ETag': `"${frame.seq}"`,
     'X-Frame-Seq': String(frame.seq),
   }).send(frame.buffer);
@@ -662,7 +662,7 @@ const httpServer = app.listen(PORT, async () => {
   // Keep a public tunnel up the whole session — it's the address the Jam QR uses
   // so phones can scan it from anywhere (not just the local network).
   if (tunnelEnabled() && !isDemo()) {
-    console.log('      Opening a public Cloudflare tunnel (used for setup + the Jam QR)…');
+    console.log('      Opening a public localhost.run tunnel on port 443 (used for setup + the Jam QR)…');
     ensureTunnel();
   }
   console.log('');

@@ -11,6 +11,8 @@
     "node": ">=18"
   },
   "dependencies": {
-    "express": "^4.19.2"
+    "@novnc/novnc": "^1.7.0",
+    "express": "^4.19.2",
+    "ws": "^8.18.0"
   }
 }

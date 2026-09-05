@@ -1,5 +1,6 @@
 // RAMTECH admin service — device management web UI (default port 8080).
 // Independent from the jam app so it can update/restart it safely.
+import http from 'node:http';
 import express from 'express';
 import { existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -8,6 +9,8 @@ import * as sys from './lib/sys.js';
 import * as auth from './lib/auth.js';
 import * as ota from './lib/ota.js';
 import * as net from './lib/net.js';
+import * as audio from './lib/audio.js';
+import * as vnc from './lib/vnc.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.ADMIN_PORT || 8080);
@@ -15,6 +18,7 @@ const app = express();
 app.disable('x-powered-by');
 app.use(express.json());
 app.use(express.static(join(__dirname, 'public')));
+app.use('/novnc', express.static(join(__dirname, 'node_modules', '@novnc', 'novnc')));
 
 // Brand logo lives in the app package (sibling dir in every release).
 app.get('/logo.png', (_req, res) => {
@@ -62,11 +66,26 @@ app.post('/api/update/apply', wrap(() => ota.apply()));
 app.post('/api/update/rollback', wrap(() => ota.rollback()));
 app.get('/api/update/status', wrap(() => ota.otaStatus()));
 
+// ── Audio ────────────────────────────────────────────────────
+app.get('/api/audio', wrap(() => audio.getAudioOutputs()));
+app.post('/api/audio/default', wrap((req) => audio.setDefaultAudioOutput(req.body?.sink)));
+app.post('/api/audio/volume', wrap((req) => audio.setVolume(req.body?.sink, req.body?.volume)));
+app.post('/api/audio/mute', wrap((req) => audio.setMute(req.body?.sink, req.body?.mute)));
+
+// ── Remote Desktop (VNC) ─────────────────────────────────────
+app.get('/api/vnc/status', wrap(() => vnc.vncStatus()));
+app.post('/api/vnc/start', wrap(() => vnc.ensureVncServer()));
+app.post('/api/vnc/stop', wrap(() => { vnc.stopVncServer(); return { ok: true }; }));
+
 // ── OS packages / power ──────────────────────────────────────
 app.post('/api/apt/upgrade', wrap(() => sys.startAptUpgrade()));
 app.get('/api/apt/status', wrap(() => sys.jobStatus('apt') || { running: false, log: '', code: null }));
 app.post('/api/power/:action', wrap((req) => sys.power(req.params.action)));
 
-app.listen(PORT, '0.0.0.0', () => {
+const server = http.createServer(app);
+vnc.setupVncWebSocket(server);
+
+server.listen(PORT, '0.0.0.0', () => {
   console.log(`RAMTECH admin listening on http://0.0.0.0:${PORT}${sys.MOCK ? '  [MOCK MODE]' : ''}`);
 });
+

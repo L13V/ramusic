@@ -1,25 +1,19 @@
 // lib/tunnel.js
-// Cloudflare "quick tunnel" (trycloudflare.com) for the setup flow.
+// localhost.run SSH reverse tunnel for the setup flow and Jam QR code.
 //
-// Why: Spotify requires OAuth redirect URIs to be HTTPS. A quick tunnel gives
-// the server a real public https URL (https://<random>.trycloudflare.com), so
-// the phone sign-in works with no certificate warnings and a redirect URI the
-// Spotify dashboard always accepts.
+// Why: Spotify requires OAuth redirect URIs to be HTTPS. localhost.run provides
+// an instant, zero-dependency public HTTPS URL on port 443 (e.g. https://<id>.lhr.life)
+// via standard OpenSSH reverse port forwarding. Traffic arriving on port 443 at
+// localhost.run's edge has TLS terminated and is forwarded over SSH to the local
+// HTTP port (default 3000).
 //
-// Lifecycle: started only while the app still needs setting up, and shut down
-// shortly after sign-in completes — the dashboard is never left exposed on a
-// public URL. The URL is random per run (that's how quick tunnels work), so
-// the setup page always shows the redirect URI to register *right now*.
-//
-// The cloudflared binary is used from PATH if installed, otherwise downloaded
-// once into .data/ (official GitHub release for this platform).
+// Zero external binaries: uses standard OpenSSH client pre-installed on Linux,
+// macOS, and Windows. No ~40 MB cloudflared binary downloads needed.
 
 import { spawn, spawnSync } from 'child_process';
-import { createWriteStream, existsSync, mkdirSync, chmodSync, renameSync, rmSync } from 'fs';
-import { pipeline } from 'stream/promises';
-import { Readable } from 'stream';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { existsSync, rmSync } from 'fs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = join(__dirname, '..', '.data');
@@ -29,63 +23,31 @@ const state = { url: null, status: 'off', error: null, proc: null };
 
 export const tunnelState = () => ({ url: state.url, status: state.status, error: state.error });
 
-// ─────────────────────────────────────────────────────────────
-//  Binary resolution: PATH first, else one-time download
-// ─────────────────────────────────────────────────────────────
-function assetName() {
-  const p = process.platform, a = process.arch;
-  if (p === 'win32') return a === 'x64' ? 'cloudflared-windows-amd64.exe' : 'cloudflared-windows-386.exe';
-  if (p === 'darwin') return a === 'arm64' ? 'cloudflared-darwin-arm64.tgz' : 'cloudflared-darwin-amd64.tgz';
-  if (p === 'linux') {
-    if (a === 'x64') return 'cloudflared-linux-amd64';
-    if (a === 'arm64') return 'cloudflared-linux-arm64';
-    return 'cloudflared-linux-arm'; // 32-bit Pi et al.
-  }
-  return null;
-}
-
-async function ensureBinary() {
-  // Already on PATH?
-  const onPath = spawnSync('cloudflared', ['--version'], { stdio: 'ignore', windowsHide: true });
-  if (onPath.status === 0) return 'cloudflared';
-
-  const exe = process.platform === 'win32' ? 'cloudflared.exe' : 'cloudflared';
-  const local = join(DATA_DIR, exe);
-  if (existsSync(local)) return local;
-
-  const name = assetName();
-  if (!name) throw new Error(`no cloudflared build for ${process.platform}/${process.arch}`);
-
-  console.log('      Downloading cloudflared (one-time, ~40 MB)…');
-  const res = await fetch(`https://github.com/cloudflare/cloudflared/releases/latest/download/${name}`);
-  if (!res.ok) throw new Error(`cloudflared download failed: HTTP ${res.status}`);
-
-  mkdirSync(DATA_DIR, { recursive: true });
-  const tmp = local + '.part';
-  if (name.endsWith('.tgz')) {
-    // macOS ships as a tarball containing a single "cloudflared" binary.
-    const tgz = join(DATA_DIR, name);
-    await pipeline(Readable.fromWeb(res.body), createWriteStream(tgz));
-    const tar = spawnSync('tar', ['-xzf', tgz, '-C', DATA_DIR]);
-    rmSync(tgz, { force: true });
-    if (tar.status !== 0) throw new Error('failed to extract cloudflared tarball');
-  } else {
-    await pipeline(Readable.fromWeb(res.body), createWriteStream(tmp));
-    renameSync(tmp, local);
-  }
-  if (process.platform !== 'win32') chmodSync(local, 0o755);
-  console.log('      cloudflared ready.');
-  return local;
-}
-
-// ─────────────────────────────────────────────────────────────
-//  Start / stop
-// ─────────────────────────────────────────────────────────────
 /**
- * Start a quick tunnel to http://127.0.0.1:<port>. Resolves with the public
- * https URL, or null on failure (state.error explains why). Idempotent while
- * starting/up; a previous 'error' is only retried on an explicit new call
- * after reset via stopTunnel().
+ * Remove any legacy cloudflared binary downloads from .data to free disk space.
+ */
+function cleanLegacyBinaries() {
+  try {
+    for (const f of ['cloudflared', 'cloudflared.exe', 'cloudflared.part']) {
+      const p = join(DATA_DIR, f);
+      if (existsSync(p)) rmSync(p, { force: true });
+    }
+  } catch {}
+}
+
+/**
+ * Verify OpenSSH client is available on PATH.
+ */
+function ensureSsh() {
+  const chk = spawnSync('ssh', ['-V'], { stdio: 'ignore', windowsHide: true });
+  if (chk.error || chk.status !== 0) {
+    throw new Error('OpenSSH client (ssh) is not installed or not found on PATH');
+  }
+}
+
+/**
+ * Start a reverse SSH tunnel via localhost.run to forward public port 443 (HTTPS)
+ * to http://127.0.0.1:<port>. Resolves with the public https URL, or null on failure.
  */
 export async function startTunnel(port) {
   if (state.status === 'up') return state.url;
@@ -93,9 +55,9 @@ export async function startTunnel(port) {
   state.status = 'starting';
   state.error = null;
 
-  let bin;
   try {
-    bin = await ensureBinary();
+    ensureSsh();
+    cleanLegacyBinaries();
   } catch (e) {
     state.status = 'error';
     state.error = e.message;
@@ -103,12 +65,32 @@ export async function startTunnel(port) {
     return null;
   }
 
+  const knownHosts = process.platform === 'win32' ? 'NUL' : '/dev/null';
+  const sshUser = process.env.LOCALHOST_RUN_USER || 'nokey';
+  const sshHost = process.env.LOCALHOST_RUN_HOST || 'localhost.run';
+  const targetHost = sshUser ? `${sshUser}@${sshHost}` : sshHost;
+
+  const args = [
+    '-o', 'StrictHostKeyChecking=no',
+    '-o', `UserKnownHostsFile=${knownHosts}`,
+    '-o', 'ExitOnForwardFailure=yes',
+    '-o', 'ServerAliveInterval=30',
+    '-o', 'ServerAliveCountMax=3',
+    '-R', `80:localhost:${port}`,
+    targetHost,
+    '--',
+    '--output', 'json'
+  ];
+
+  if (process.env.LOCALHOST_RUN_KEY) {
+    args.unshift('-i', process.env.LOCALHOST_RUN_KEY);
+  }
+
   return new Promise((resolve) => {
-    const proc = spawn(
-      bin,
-      ['tunnel', '--url', '--protocol http2', `http://127.0.0.1:${port}`, '--no-autoupdate'],
-      { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true }
-    );
+    const proc = spawn('ssh', args, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
     state.proc = proc;
     let settled = false;
 
@@ -116,25 +98,63 @@ export async function startTunnel(port) {
       if (settled) return;
       settled = true;
       state.status = 'error';
-      state.error = 'timed out waiting for the tunnel URL';
-      try { proc.kill(); } catch { /* already dead */ }
+      state.error = 'timed out waiting for the localhost.run tunnel URL';
+      try { proc.kill(); } catch {}
       resolve(null);
-    }, 60_000);
+    }, 45_000);
 
-    const onData = (buf) => {
-      // cloudflared prints the assigned URL (to stderr) once the tunnel is up.
-      const m = String(buf).match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
+    const parseOutput = (data) => {
+      if (settled) return;
+      const text = String(data);
+
+      // 1. Try parsing JSON lines (from --output json)
+      const lines = text.split('\n');
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        try {
+          const obj = JSON.parse(trimmed);
+          if (obj.status === 'fail' || obj.type === 'unauthorized') {
+            settled = true;
+            clearTimeout(timer);
+            state.status = 'error';
+            state.error = obj.message || 'localhost.run authorization failed';
+            resolve(null);
+            return;
+          }
+          if (obj.address && typeof obj.address === 'string' && (obj.status === 'success' || obj.event === 'tcpip-forward' || obj.type === 'opened')) {
+            settled = true;
+            clearTimeout(timer);
+            state.url = obj.address.startsWith('http') ? obj.address : `https://${obj.address}`;
+            state.status = 'up';
+            console.log(`      Public setup link: ${state.url}/setup (via localhost.run:443)`);
+            resolve(state.url);
+            return;
+          }
+        } catch {
+          // not JSON line, proceed to regex
+        }
+      }
+
+      // 2. Fallback regex match for text output:
+      // Must match assigned user tunnel (e.g. *.lhr.life or *.localhost.run),
+      // ignoring localhost.run informational links (admin.localhost.run, localhost.run/docs).
+      const m = text.match(/https:\/\/[a-z0-9-]+\.lhr\.life/i) ||
+                text.match(/([a-z0-9-]+\.lhr\.life)\s+tunneled/i) ||
+                text.match(/https:\/\/(?!admin\b|www\b|docs\b)[a-z0-9-]+\.localhost\.run/i);
       if (m && !settled) {
         settled = true;
         clearTimeout(timer);
-        state.url = m[0];
+        const urlStr = m[0].startsWith('http') ? m[0] : `https://${m[1]}`;
+        state.url = urlStr;
         state.status = 'up';
-        console.log(`      Public setup link: ${m[0]}/setup`);
-        resolve(m[0]);
+        console.log(`      Public setup link: ${state.url}/setup (via localhost.run:443)`);
+        resolve(state.url);
       }
     };
-    proc.stdout.on('data', onData);
-    proc.stderr.on('data', onData);
+
+    proc.stdout.on('data', parseOutput);
+    proc.stderr.on('data', parseOutput);
 
     proc.on('error', (e) => {
       if (settled) return;
@@ -144,15 +164,16 @@ export async function startTunnel(port) {
       state.error = e.message;
       resolve(null);
     });
+
     proc.on('exit', (code) => {
       if (!settled) {
         settled = true;
         clearTimeout(timer);
         state.status = 'error';
-        state.error = `cloudflared exited early (code ${code})`;
+        state.error = `ssh exited early (code ${code})`;
         resolve(null);
       } else if (state.proc === proc) {
-        // died after being up (network blip etc.) — allow a later restart
+        // Disconnected after being up — allow a later restart
         state.proc = null;
         state.url = null;
         state.status = 'off';
@@ -162,15 +183,15 @@ export async function startTunnel(port) {
 }
 
 export function stopTunnel() {
-  try { state.proc?.kill(); } catch { /* already dead */ }
+  try { state.proc?.kill(); } catch {}
   state.proc = null;
   state.url = null;
   state.status = 'off';
   state.error = null;
 }
 
-// Don't leave orphaned cloudflared processes behind.
-process.on('exit', () => { try { state.proc?.kill(); } catch { /* noop */ } });
+// Don't leave orphaned ssh processes behind
+process.on('exit', () => { try { state.proc?.kill(); } catch {} });
 for (const sig of ['SIGINT', 'SIGTERM']) {
   process.on(sig, () => { stopTunnel(); process.exit(0); });
 }
