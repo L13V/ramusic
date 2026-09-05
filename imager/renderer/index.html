@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:">
+<title>RAMTECH Imager</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div id="needs-admin" class="gate" hidden>
+  <h1>Administrator rights needed</h1>
+  <p>Writing a bootable USB stick means writing to raw disk sectors, which Windows
+     only allows to an elevated program.</p>
+  <button id="relaunch" class="primary">Restart as administrator</button>
+</div>
+
+<main id="app" hidden>
+  <header>
+    <div class="mark">RAMTECH</div>
+    <div>
+      <h1>Imager</h1>
+      <p class="sub">Put RAMTECH OS on a USB stick, plug it into the panel, done.</p>
+    </div>
+  </header>
+
+  <section class="card" data-step="1">
+    <div class="step"><span class="num">1</span><h2>Choose the image</h2></div>
+    <label class="row choice">
+      <input type="radio" name="source" value="latest" checked>
+      <span class="body">
+        <strong>Latest RAMTECH OS</strong>
+        <span id="latest-detail" class="muted">Checking GitHub…</span>
+      </span>
+    </label>
+    <label class="row choice">
+      <input type="radio" name="source" value="file">
+      <span class="body">
+        <strong>A file on this computer</strong>
+        <span id="file-detail" class="muted">A <code>.img.gz</code> you built yourself</span>
+      </span>
+      <button id="browse" class="ghost">Browse…</button>
+    </label>
+  </section>
+
+  <section class="card" data-step="2">
+    <div class="step">
+      <span class="num">2</span><h2>Choose the USB stick</h2>
+      <button id="refresh" class="ghost right">Refresh</button>
+    </div>
+    <div id="drives" class="drives"><p class="muted pad">Looking for USB drives…</p></div>
+    <p class="warn">Everything already on the stick is erased. 8 GB or larger.</p>
+  </section>
+
+  <section class="card" data-step="3">
+    <div class="step"><span class="num">3</span><h2>Write it</h2></div>
+    <label class="row"><input type="checkbox" id="verify" checked>
+      <span class="body"><strong>Verify after writing</strong>
+        <span class="muted">Reads it back and compares — catches a bad stick now, not at the panel.</span>
+      </span>
+    </label>
+  </section>
+</main>
+
+<!-- Outside <main> so the action stays put whatever the window size or the
+     display's scaling factor does to the height of the steps above it. -->
+<footer class="actions">
+  <p id="write-hint" class="muted"></p>
+  <button id="write" class="primary" disabled>Write to USB</button>
+</footer>
+
+<div id="busy" class="overlay" hidden>
+  <div class="panel">
+    <h2 id="busy-title">Working…</h2>
+    <div class="bar"><div id="busy-fill"></div></div>
+    <p id="busy-detail" class="muted"></p>
+    <p class="muted small">Leave the stick plugged in until this finishes.</p>
+  </div>
+</div>
+
+<div id="done" class="overlay" hidden>
+  <div class="panel">
+    <h2 class="ok">The stick is ready</h2>
+    <ol class="next">
+      <li>Plug it into a <strong>USB port on the OPS module</strong> — the PC slot in the back of the panel, not a panel-front port.</li>
+      <li>Power the panel on and open the firmware boot menu (usually <kbd>F7</kbd>, sometimes <kbd>F12</kbd> or <kbd>Esc</kbd>) and pick the USB stick.</li>
+      <li>To make it permanent, set the stick first in the boot order in BIOS setup (<kbd>Del</kbd> or <kbd>F2</kbd>).</li>
+      <li>RAMTECH OS boots straight to the dashboard and shows a QR code — scan it with a phone to sign in to Spotify. That sign-in is remembered across reboots.</li>
+    </ol>
+    <button id="again" class="ghost">Write another stick</button>
+  </div>
+</div>
+
+<div id="error" class="overlay" hidden>
+  <div class="panel">
+    <h2 class="bad">That didn't work</h2>
+    <p id="error-detail"></p>
+    <button id="error-back" class="ghost">Back</button>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

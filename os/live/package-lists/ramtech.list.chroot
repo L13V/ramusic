@@ -1,0 +1,56 @@
+# RAMTECH OS — packages baked into the live filesystem.
+# (live-boot / live-config / the kernel are added by live-build itself.)
+
+# Firmware — an OPS module's Intel graphics, Wi-Fi and audio all want blobs.
+firmware-linux
+firmware-iwlwifi
+firmware-realtek
+firmware-atheros
+firmware-sof-signed
+intel-media-va-driver-non-free
+va-driver-all
+
+# Networking (the admin UI drives nmcli)
+network-manager
+wireless-tools
+wpasupplicant
+avahi-daemon
+libnss-mdns
+
+# Kiosk session: X11 + a bare window manager. No desktop environment.
+xserver-xorg-core
+xserver-xorg-input-libinput
+xserver-xorg-video-all
+xinit
+openbox
+x11-xserver-utils
+unclutter
+fonts-noto-core
+fonts-noto-color-emoji
+
+# Audio. The x86 panel plays through the browser (Widevine), so a working
+# PipeWire graph is all that is needed.
+pipewire
+pipewire-pulse
+pipewire-alsa
+wireplumber
+alsa-utils
+pulseaudio-utils
+
+# Boot splash
+plymouth
+plymouth-themes
+
+# Tooling used by the app, the admin UI and the OTA updater
+curl
+ca-certificates
+gnupg
+jq
+sudo
+less
+nano
+htop
+ca-certificates
+usbutils
+pciutils
+lm-sensors

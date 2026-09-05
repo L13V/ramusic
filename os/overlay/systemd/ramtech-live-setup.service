@@ -1,0 +1,15 @@
+[Unit]
+Description=RAMTECH live boot setup (kiosk user, permissions)
+# live-config creates the kiosk user from the username= boot argument, so this
+# has to follow it and precede everything that assumes the user exists.
+After=live-config.service local-fs.target
+Before=getty@tty1.service spotify-tv-jam.service ramtech-admin.service
+RequiresMountsFor=/opt/ramtech
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/ramtech/bin/ramtech-live-setup.sh
+
+[Install]
+WantedBy=multi-user.target

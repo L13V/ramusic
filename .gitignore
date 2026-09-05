@@ -4,5 +4,8 @@ node_modules/
 npm-debug.log*
 *.img
 *.img.xz
+*.img.gz
 ramtech-app-*.tar.gz
 auth.json
+os/out/
+imager/dist/

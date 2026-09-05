@@ -31,4 +31,5 @@ exec "$BIN" \
   --start-fullscreen --noerrdialogs --disable-infobars \
   --disable-session-crashed-bubble --disable-features=Translate \
   --check-for-update-interval=31536000 --password-store=basic \
+  --no-first-run --no-default-browser-check \
   --overscroll-history-navigation=0

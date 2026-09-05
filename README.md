@@ -1,8 +1,9 @@
 # 🎧 spotify-tv-jam / RAMTECH OS
 
 > **Repo layout:** the TV dashboard app lives in [`app/`](app/), the RAMTECH
-> device-manager web UI in [`admin/`](admin/), and the Orange Pi 5 OS image
-> build in [`os/`](os/) — see **RAMTECH OS appliance** at the bottom.
+> device-manager web UI in [`admin/`](admin/), the bootable OS image build in
+> [`os/`](os/), and the one-click USB writer in [`imager/`](imager/) — see
+> **RAMTECH OS live USB** at the bottom.
 > `start.bat` / `start.sh` still run the app from the repo root as before.
 
 A full-screen "listening party" dashboard for a TV. It shows:
@@ -170,9 +171,11 @@ Per-song "added by" names come from the Jam session data; songs added outside a 
 - `.env` values still work as overrides/seeds (e.g. a hand-obtained
   `SPOTIFY_REFRESH_TOKEN`); anything saved via `/setup` wins.
 
-## Run on an Orange Pi 5 (kiosk appliance)
+## Run it on a machine you already have (manual install)
 
-Turn a board into a plug-in-and-go dashboard that boots straight into the TV view.
+Turn any Debian/Ubuntu box into a plug-in-and-go dashboard that boots straight
+into the TV view. For a Promethean panel you almost certainly want the
+**live USB** instead (bottom of this file) — it installs nothing.
 
 ```bash
 git clone <this repo> ~/spotify-tv-jam
@@ -181,12 +184,12 @@ bash deploy/install.sh      # installs Node + Chromium, sets up auto-start
 sudo reboot
 ```
 
-`deploy/install.sh` (Debian/Ubuntu/Armbian ARM64):
+`deploy/install.sh` (Debian/Ubuntu/Armbian, ARM64-flavoured):
 - installs Node 20 + Chromium if missing,
 - runs the server as a **systemd service** (`spotify-tv-jam`, auto-restart on crash/boot),
 - adds a **desktop auto-start** that opens Chromium full-screen on the dashboard (`deploy/kiosk.sh`).
 
-Logs: `journalctl -u spotify-tv-jam -f`. It runs **entirely on the Pi** — the
+Logs: `journalctl -u spotify-tv-jam -f`. It runs **entirely on the box** — the
 Cloudflare tunnel is only the public address the Jam QR points at.
 
 **Branding:** drop your logo at `public/ramtech-logo.png`.
@@ -196,11 +199,12 @@ requires a **6-digit code shown only on the TV** (loopback-only). View the page 
 anywhere; you can only edit it if you can see the screen. Requests from the Pi itself
 skip the code.
 
-**Audio on the Pi:** ARM Chromium can't do Spotify's DRM web player, so the Pi plays
-through **librespot** (installed as `raspotify` by `install.sh`) — a headless Spotify
+**Audio:** ARM Chromium can't do Spotify's DRM web player, so `install.sh` sets the
+box up to play through **librespot** (installed as `raspotify`) — a headless Spotify
 Connect device named **RAMTECH TV**. One-time: on your phone's Spotify app (same
 account, **Premium**), open the devices menu and tap **RAMTECH TV** once to authorize
-it; it then reconnects on its own forever.
+it; it then reconnects on its own forever. On x86 this sidecar isn't needed — see the
+live USB section, which ships Google Chrome and plays through the Web Playback SDK.
 
 **Playback rule:** music plays **only while someone else is in the Jam**, and
 **joining is what starts it**: Spotify gives remote guests no way to start the
@@ -209,7 +213,7 @@ drops them out of the Jam), so the host must be playing for guest phones to mirr
 the Jam and queue into it. Boot is silent (the seed playlist is loaded but paused —
 just enough for the QR to appear); the first guest joining starts playback once;
 a deliberate pause mid-Jam is respected, not fought; the last guest leaving pauses
-the Pi again (`JAM_PLAY_ON_GUEST=true` controls all of this).
+it again (`JAM_PLAY_ON_GUEST=true` controls all of this).
 
 ## File map
 ```
@@ -226,51 +230,129 @@ app/public/         The TV UI (index.html, style.css, app.js), player.js
 app/deploy/kiosk.sh Kiosk browser launcher (used by the OS image + install.sh)
 app/.data/          Generated at runtime: tokens, TLS cert, cloudflared (gitignored)
 admin/              RAMTECH device manager web UI (port 8080) — see below
-os/                 RAMTECH OS image build (Armbian userpatches) — see below
-deploy/install.sh   Legacy manual installer for an existing Debian/Armbian board
+os/                 RAMTECH OS live-USB image build (Debian live-build) — see below
+os/overlay/         What gets baked into the image: systemd units, OTA scripts,
+                    kiosk session, branding, seeded .env
+imager/             RAMTECH Imager — the Electron GUI that writes the image to USB
+deploy/install.sh   Manual installer for an existing Debian/Armbian board
 .github/workflows/  release.yml: tag v* → OTA tarball on GitHub Releases
 ```
 
 ---
 
-# 🖥 RAMTECH OS appliance (Orange Pi 5)
+# 🖥 RAMTECH OS live USB (x86 / Promethean OPS)
 
-A flashable, RAMTECH-branded OS image that boots straight into the dashboard —
-plus a **device manager web UI** and **OTA updates**.
+A bootable USB stick that turns the **OPS module** in a Promethean panel — or
+any x86 mini PC — into the dashboard. Nothing is installed on the panel: pull
+the stick out and the machine boots back into whatever it ran before.
 
-## What's in the image
-- Armbian trixie (mainline kernel, Mali GPU accel), branded **RAMTECH OS**
-- Boots keyboard-free: autologin → X11 → Chromium kiosk on `localhost:3000`
-- `spotify-tv-jam` + `ramtech-admin` as systemd services, librespot
-  (**RAMTECH TV** Spotify Connect device) for audio
-- App installed under `/opt/ramtech/releases/<ver>` with a `current` symlink;
-  tokens/settings live in `/opt/ramtech/data` and survive updates
+The whole process is two steps.
+
+## 1. Write the stick
+
+Open **RAMTECH Imager**, pick a USB stick, press **Write**.
+
+
+It downloads the latest image from this repo's GitHub Releases (cached, so the
+second stick is instant), checks its SHA-256, erases the stick, writes it and
+reads it back to verify. Nothing to configure and no partitioning to do — the
+persistence partition is already inside the image.
+
+```bash
+cd imager
+npm install
+npm start           # or `npm run dist` to build an installer
+```
+Windows needs Administrator (the app asks and restarts itself); macOS and Linux
+prompt for a password when the write starts. If you'd rather not run it,
+**balenaEtcher** and **Rufus** both open the `.img.gz` directly and do the same
+job — the imager just removes the "which of these 14 options do I pick" problem.
+
+## 2. Boot the panel from it
+
+1. Plug the stick into a **USB port on the OPS module** — the PC in the bay at
+   the back of the panel, not a panel-front port (those are wired to Android).
+2. Power on and press the boot-menu key: **F7** on most Promethean OPS modules,
+   sometimes **F12** or **Esc**. Pick the USB stick.
+3. To make it permanent, put the stick first in the boot order in BIOS setup
+   (**Del** or **F2**).
+
+The image is **Secure Boot signed** (Debian's shim), so it boots without turning
+Secure Boot off. It boots UEFI; the BIOS/CSM path is best-effort.
+
+The boot menu shows for two seconds and then starts on its own — a panel has no
+keyboard, and live-build's stock templates wait at that menu forever. Press a key
+during those two seconds to reach the fail-safe entry.
+
+First boot lands on the dashboard's **"Scan to set up"** QR — sign in to Spotify
+from a phone exactly as described at the top of this file. That sign-in is
+written to the stick's persistence partition and is still there after a reboot.
+
+## What's on the stick
+- Debian **trixie** live system, branded RAMTECH OS, built with `live-build`
+- Boots keyboard-free: autologin → X11 → **Google Chrome** kiosk on `localhost:3000`
+- `spotify-tv-jam` + `ramtech-admin` as systemd services
+- **The panel plays the music itself.** Google Chrome ships Widevine, so the
+  Spotify Web Playback SDK works and the panel appears as the **RAMTECH TV**
+  Connect device — no librespot sidecar, unlike the ARM build
+- A **4 GB ext4 persistence partition** mounted `/ union`: Spotify tokens,
+  admin settings, Wi-Fi and OTA-installed app versions all survive reboots
+- App under `/opt/ramtech/releases/<ver>` with a `current` symlink; state in
+  `/opt/ramtech/data`
+
+Console login (plug in a keyboard, Ctrl+Alt+F2): `ramtech` / `ramtech`. Root is
+locked. Anyone holding the stick owns it — treat it like a key, not a password.
 
 ## Device manager (port 8080)
 `http://ramtech.local:8080` — default password **`ramtech`** (a change is
-forced on first login). Status/temps, service control, journals, Wi-Fi (with a
-USB dongle), hostname, apt upgrades, reboot — and **Software update**: checks
-this repo's GitHub Releases, installs atomically, health-checks the app and
-**rolls back automatically** if the new version doesn't come up. Optional
-daily auto-update timer.
+forced on first login). Status/temps, service control, journals, Wi-Fi,
+hostname, apt upgrades, reboot — and **Software update**: checks this repo's
+GitHub Releases, installs atomically, health-checks the app and **rolls back
+automatically** if the new version doesn't come up. Optional daily auto-update
+timer. Updates land on the persistence partition, so they stick.
+
+## Building the image yourself
+```bash
+bash os/build.sh                  # ~30 min the first time, ~15 after
+bash os/build.sh --clean          # throw away the package cache too
+bash os/build.sh --smoke-test     # then boot the result in QEMU and screenshot it
+PERSIST_MB=8192 bash os/build.sh  # a bigger persistence partition
+```
+The first run downloads roughly 1.5 GB of Debian packages; later runs reuse them
+from a Docker volume, so most of the time goes on squashfs and gzip.
+The only requirement is **Docker** — the build runs in the Debian container from
+[`os/Dockerfile`](os/Dockerfile), so the command is the same on Windows (Git
+Bash), macOS and Linux. Output lands in `os/out/`:
+
+| file | what it is |
+| --- | --- |
+| `ramtech-os-<ver>-x86_64.img.gz` | the USB image, gzip so the imager can stream it with no dependencies |
+| `ramtech-os-<ver>-x86_64.img.gz.sha256` | what the imager checks the download against |
+| `ramtech-os-<ver>-x86_64.iso` | the same system as a plain ISO, for VMs — **no persistence** |
+| `build.log` | the full live-build log |
+
+The build bakes in the **latest GitHub release** of the app (repo set in
+[`os/overlay/seed/repo.txt`](os/overlay/seed/repo.txt)); drop a
+`ramtech-app-<ver>.tar.gz` into `os/overlay/seed/` to build fully offline.
+
+**How the image is put together** — `live-build` produces a hybrid ISO, and then
+[`os/finish-image.sh`](os/finish-image.sh) appends a labelled ext4 `ramtech-data`
+partition to it and writes `persistence.conf` inside. Baking the partition in
+rather than creating it on the stick is what lets the imager be one click on
+Windows, which cannot format ext4. The finished layout:
+
+```
+1  1.2 GB  bootable  the ISO itself (squashfs, kernel, initrd)
+2  3.3 MB  EFI       the ESP, embedded in the ISO — Debian's signed shim + GRUB
+3  4.0 GB  Linux     ext4 "ramtech-data", persistence.conf = "/ union"
+```
 
 ## Releasing an update (OTA)
 ```bash
 git tag v1.2.3 && git push origin v1.2.3
 ```
 CI builds `ramtech-app-v1.2.3.tar.gz` (app + admin + updater, node_modules
-bundled) and publishes a GitHub Release. Devices see it via **Check** or the
-daily timer.
-
-## Building the image (Windows + WSL2)
-```bash
-wsl -u root bash os/build.sh
-```
-First build compiles a kernel (~1–2 h, ~50 GB in the WSL disk); later builds
-are ~15–30 min. Output: `~/armbian/build/output/images/…img.xz` (inside WSL).
-Flash with balenaEtcher/USBImager. The build bakes in the **latest GitHub
-release** of the app (set the repo in `os/userpatches/overlay/seed/repo.txt`),
-or drop a `ramtech-app-<ver>.tar.gz` into `os/userpatches/overlay/seed/` to
-build fully offline.
-
-Console login: user `ramtech` / password `ramtech` (root is locked).
+bundled), publishes a GitHub Release, then builds the OS image against that
+release and attaches it too. Existing sticks pick the app up via **Check** in
+the device manager or the daily timer; the imager offers the new image to
+anyone writing a fresh stick.

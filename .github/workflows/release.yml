@@ -27,7 +27,8 @@ jobs:
       - name: Lint shell scripts
         run: |
           sudo apt-get install -y shellcheck >/dev/null
-          shellcheck -S warning os/userpatches/overlay/bin/*.sh app/deploy/kiosk.sh
+          shellcheck -S warning os/overlay/bin/*.sh os/*.sh app/deploy/kiosk.sh
+          shellcheck -S warning -s bash os/live/hooks/normal/*.hook.chroot
 
       - name: Build tarball
         run: |
@@ -35,7 +36,7 @@ jobs:
           STAGE="$(mktemp -d)"
           cp -r app admin "$STAGE/"
           mkdir -p "$STAGE/bin"
-          cp os/userpatches/overlay/bin/*.sh "$STAGE/bin/"
+          cp os/overlay/bin/*.sh "$STAGE/bin/"
           chmod +x "$STAGE/bin/"*.sh "$STAGE/app/deploy/"*.sh
           printf '%s\n' "$TAG" > "$STAGE/VERSION"
           # Never ship local state or secrets.
@@ -48,3 +49,41 @@ jobs:
         with:
           files: ramtech-app-*.tar.gz
           generate_release_notes: true
+
+  # The OS image bakes in the app tarball the job above just published, so it
+  # has to run second. The imager's "Latest RAMTECH OS" option reads this asset.
+  os-image:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY"
+          df -h /
+
+      - name: Build the live image
+        env:
+          RAMTECH_VERSION: ${{ github.ref_name }}
+        run: |
+          docker build -t ramtech-os-builder os
+          docker run --rm --privileged \
+            -v "$PWD:/src" -e RAMTECH_VERSION -e PERSIST_MB=4096 \
+            ramtech-os-builder bash /src/os/build-in-container.sh
+          ls -lh os/out
+
+      - name: Attach the image to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            os/out/ramtech-os-*.img.gz
+            os/out/ramtech-os-*.img.gz.sha256
+
+      - name: Keep the build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-build-log
+          path: os/out/build.log

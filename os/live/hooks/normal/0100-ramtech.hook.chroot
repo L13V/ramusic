@@ -1,0 +1,172 @@
+#!/bin/bash
+# RAMTECH OS image customization. Run by live-build inside the amd64 chroot
+# after packages are installed; the network is available and the repo's
+# os/overlay/ tree has already been copied to /opt/ramtech-overlay.
+set -e
+export DEBIAN_FRONTEND=noninteractive
+
+OVERLAY=/opt/ramtech-overlay
+ROOT=/opt/ramtech
+
+echo "=== RAMTECH customize (x86_64 live) ==="
+
+# ── 1. Node.js 20 (nodesource apt repo — no curl|bash) ───────
+install -d -m 0755 /etc/apt/keyrings
+curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+  | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
+echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" \
+  > /etc/apt/sources.list.d/nodesource.list
+
+# ── 2. Google Chrome, not Chromium ───────────────────────────
+# The dashboard plays audio itself through Spotify's Web Playback SDK, which
+# needs Widevine. Debian's chromium ships without it; Google's build bundles
+# it — that is the whole reason the x86 panel needs no librespot sidecar.
+curl -fsSL https://dl.google.com/linux/linux_signing_key.pub \
+  | gpg --dearmor -o /etc/apt/keyrings/google-chrome.gpg
+echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/google-chrome.gpg] https://dl.google.com/linux/chrome/deb/ stable main" \
+  > /etc/apt/sources.list.d/google-chrome.list
+
+apt-get update
+apt-get install -y nodejs google-chrome-stable
+
+# Allow startx from the autologin tty (rootless X on a bare console).
+cat > /etc/X11/Xwrapper.config <<'EOF'
+allowed_users=anybody
+needs_root_rights=yes
+EOF
+
+# ── 2b. Stop Chrome asking the panel questions ───────────────
+# Google Chrome (unlike Debian's chromium) opens a Terms of Service modal on its
+# very first launch and waits for a click. On a panel with no mouse that is a
+# dead appliance, so seed the profile's first-run sentinel — Chrome treats the
+# file's presence as "this profile has run before" and skips the dialog.
+install -d -m 0755 /etc/skel/.config/ramtech-kiosk
+: > "/etc/skel/.config/ramtech-kiosk/First Run"
+
+install -d -m 0755 /etc/opt/chrome/policies/managed
+cat > /etc/opt/chrome/policies/managed/ramtech.json <<'EOF'
+{
+  "MetricsReportingEnabled": false,
+  "DefaultBrowserSettingEnabled": false,
+  "PromotionalTabsEnabled": false,
+  "BrowserSignin": 0,
+  "PasswordManagerEnabled": false,
+  "AutofillAddressEnabled": false,
+  "AutofillCreditCardEnabled": false,
+  "BackgroundModeEnabled": false,
+  "ComponentUpdatesEnabled": true
+}
+EOF
+cat > /etc/opt/chrome/initial_preferences <<'EOF'
+{
+  "distribution": {
+    "skip_first_run_ui": true,
+    "import_bookmarks": false,
+    "make_chrome_default": false,
+    "suppress_first_run_default_browser_prompt": true
+  },
+  "first_run_tabs": []
+}
+EOF
+
+# ── 3. Kiosk session files ───────────────────────────────────
+# live-config creates the "ramtech" user at boot (username= boot arg), copying
+# /etc/skel — so the session lands there rather than in a baked /home.
+install -m 0755 "$OVERLAY/kiosk/xinitrc" /etc/skel/.xinitrc
+install -m 0644 "$OVERLAY/kiosk/bash_profile" /etc/skel/.bash_profile
+# Autologin on tty1. live-config writes its own autologin.conf drop-in; ours
+# sorts after it so the kiosk user wins regardless of what live-config decides.
+mkdir -p /etc/systemd/system/getty@tty1.service.d
+install -m 0644 "$OVERLAY/systemd/getty-autologin.conf" \
+  /etc/systemd/system/getty@tty1.service.d/zz-ramtech-autologin.conf
+
+# ── 4. App payload: install the latest GitHub release (same path as OTA) ──
+mkdir -p "$ROOT/releases" "$ROOT/data/app" "$ROOT/data/admin" "$ROOT/ota" "$ROOT/bin"
+cp "$OVERLAY/bin/"*.sh "$ROOT/bin/"
+chmod +x "$ROOT/bin/"*.sh
+
+REPO="$(head -n1 "$OVERLAY/seed/repo.txt" 2>/dev/null | tr -d '[:space:]')"
+TARBALL=""
+VERSION=""
+if [ -n "$REPO" ] && [ "$REPO" != "OWNER/REPO" ]; then
+  echo "=== Fetching latest release from $REPO ==="
+  REL_JSON="$(curl -fsS -m 30 -H 'accept: application/vnd.github+json' -H 'user-agent: ramtech-build' \
+    "https://api.github.com/repos/$REPO/releases/latest" || true)"
+  VERSION="$(printf '%s' "$REL_JSON" | jq -r '.tag_name // empty')"
+  URL="$(printf '%s' "$REL_JSON" | jq -r '[.assets[] | select(.name | startswith("ramtech-app-") and endswith(".tar.gz"))][0].browser_download_url // empty')"
+  if [ -n "$URL" ]; then
+    TARBALL=/tmp/ramtech-app.tar.gz
+    curl -fL --retry 3 -o "$TARBALL" "$URL"
+  fi
+fi
+# Offline fallback: a tarball pre-placed in the overlay.
+if [ -z "$TARBALL" ]; then
+  SEED_TGZ="$(ls "$OVERLAY"/seed/ramtech-app-*.tar.gz 2>/dev/null | head -n1 || true)"
+  if [ -n "$SEED_TGZ" ]; then
+    TARBALL="$SEED_TGZ"
+    VERSION="$(basename "$SEED_TGZ" .tar.gz | sed 's/^ramtech-app-//')"
+  fi
+fi
+if [ -z "$TARBALL" ]; then
+  echo "!!! No app payload: set a real repo in os/overlay/seed/repo.txt (with a"
+  echo "!!! published release) or drop ramtech-app-<ver>.tar.gz into os/overlay/seed/."
+  exit 1
+fi
+
+DEST="$ROOT/releases/$VERSION"
+mkdir -p "$DEST"
+tar -xzf "$TARBALL" -C "$DEST"
+[ -f "$DEST/VERSION" ] || echo "$VERSION" > "$DEST/VERSION"
+cp -f "$OVERLAY/seed/env.default" "$ROOT/data/.env"
+ln -sfn "$ROOT/data/app" "$DEST/app/.data"
+ln -sfn "$ROOT/data/.env" "$DEST/app/.env"
+ln -sfn "releases/$VERSION" "$ROOT/current"
+chmod +x "$DEST/app/deploy/"*.sh 2>/dev/null || true
+# Prefill the admin's update source with the same repo.
+if [ -n "$REPO" ] && [ "$REPO" != "OWNER/REPO" ]; then
+  cat > "$ROOT/data/admin/settings.json" <<EOF
+{
+  "repo": "$REPO",
+  "autoUpdate": false
+}
+EOF
+fi
+printf '%s\n' "$VERSION" > /etc/ramtech-version
+
+# ── 5. Services ──────────────────────────────────────────────
+# 0644, not a plain cp: a Windows checkout hands these over as 0755 and systemd
+# warns about every one of them at boot.
+for u in spotify-tv-jam.service ramtech-admin.service \
+         ramtech-live-setup.service ramtech-ota-check.service \
+         ramtech-ota-check.timer; do
+  install -m 0644 "$OVERLAY/systemd/$u" /etc/systemd/system/"$u"
+done
+install -m 0755 "$OVERLAY/bin/ramtech-live-setup.sh" "$ROOT/bin/ramtech-live-setup.sh"
+systemctl enable spotify-tv-jam ramtech-admin ramtech-live-setup
+# (ramtech-ota-check.timer ships disabled; toggled from the admin UI)
+
+# ── 6. Boot splash: RAMTECH ram logo via Plymouth ────────────
+mkdir -p /usr/share/plymouth/themes/ramtech
+install -m 0644 "$OVERLAY/branding/ramtech.plymouth" /usr/share/plymouth/themes/ramtech/
+install -m 0644 "$OVERLAY/branding/ramtech.script" /usr/share/plymouth/themes/ramtech/
+# The splash image is the same ram logo the dashboard uses — no duplicate asset.
+cp "$DEST/app/public/ramtech-logo.png" /usr/share/plymouth/themes/ramtech/logo.png
+plymouth-set-default-theme ramtech
+update-initramfs -u
+
+# ── 7. Branding ──────────────────────────────────────────────
+echo ramtech > /etc/hostname
+printf '127.0.1.1\tramtech\n' >> /etc/hosts
+install -m 0755 "$OVERLAY/branding/20-ramtech" /etc/update-motd.d/20-ramtech
+sed -i 's/^PRETTY_NAME=.*/PRETTY_NAME="RAMTECH OS (Debian trixie live)"/' /etc/os-release || true
+cat > /etc/issue <<'EOF'
+RAMTECH OS \n \l
+
+EOF
+
+# ── 8. Trim ──────────────────────────────────────────────────
+# The overlay is build-time scaffolding; the payload it placed stays.
+rm -rf "$OVERLAY"
+apt-get clean
+rm -rf /var/lib/apt/lists/*
+echo "=== RAMTECH customize done: $VERSION ==="
