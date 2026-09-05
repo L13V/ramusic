@@ -6,7 +6,7 @@
   "main": "main.js",
   "license": "MIT",
   "scripts": {
-    "start": "electron .",
+    "start": "node scripts/start.js",
     "dist": "electron-builder",
     "dist:win": "electron-builder --win",
     "dist:mac": "electron-builder --mac",
@@ -19,14 +19,37 @@
   "build": {
     "appId": "net.ramtech.imager",
     "productName": "RAMTECH Imager",
-    "files": ["main.js", "preload.js", "lib/**", "renderer/**"],
+    "files": [
+      "main.js",
+      "preload.js",
+      "lib/**",
+      "renderer/**"
+    ],
     "win": {
-      "target": ["nsis", "portable"],
+      "target": [
+        "nsis",
+        "portable"
+      ],
       "icon": "build/icon.png",
       "requestedExecutionLevel": "requireAdministrator"
     },
-    "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true },
-    "mac": { "target": ["dmg"], "icon": "build/icon.png", "category": "public.app-category.utilities" },
-    "linux": { "target": ["AppImage"], "icon": "build/icon.png", "category": "Utility" }
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "icon": "build/icon.png",
+      "category": "public.app-category.utilities"
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "icon": "build/icon.png",
+      "category": "Utility"
+    }
   }
 }
