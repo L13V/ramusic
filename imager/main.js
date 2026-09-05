@@ -6,6 +6,7 @@ const drives = require('./lib/drives');
 const releases = require('./lib/release');
 const elevate = require('./lib/elevate');
 const builder = require('./lib/builder');
+const exporter = require('./lib/export');
 
 let win = null;
 let writing = null;   // { progressPath, timer, child }
@@ -41,6 +42,10 @@ ipcMain.handle('app:relaunch-elevated', () => {
 });
 
 ipcMain.handle('app:open-external', (_e, url) => shell.openExternal(url));
+ipcMain.handle('app:show-item', (_e, targetPath) => {
+  if (targetPath) shell.showItemInFolder(targetPath);
+  return true;
+});
 
 // ── Step 1: the image ────────────────────────────────────────
 ipcMain.handle('release:latest', async () => releases.latest());
@@ -77,6 +82,29 @@ ipcMain.handle('build:start', async (_e, opts) => {
 ipcMain.handle('build:cancel', () => {
   builder.cancelBuild();
   return true;
+});
+
+ipcMain.handle('image:save-dialog', async (_e, { defaultName } = {}) => {
+  const r = await dialog.showSaveDialog(win, {
+    title: 'Export as .img.gz',
+    defaultPath: defaultName || 'ramtech-os-x86_64.img.gz',
+    filters: [
+      { name: 'Gzipped Disk Image (*.img.gz)', extensions: ['img.gz', 'gz'] },
+      { name: 'All Files (*.*)', extensions: ['*'] },
+    ],
+  });
+  if (r.canceled || !r.filePath) return null;
+  return r.filePath;
+});
+
+ipcMain.handle('image:export', async (_e, { src, dest }) => {
+  return await exporter.exportImage({
+    src,
+    dest,
+    onProgress: (progress) => {
+      if (win) win.webContents.send('export:progress', progress);
+    },
+  });
 });
 
 // ── Step 2: the stick ────────────────────────────────────────

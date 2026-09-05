@@ -297,6 +297,41 @@ async function main() {
   report({ phase: 'preparing', written: 0, total: compressedTotal, done: false });
   unmount(dest);
 
+  // On Windows, raw physical devices (\\.\PHYSICALDRIVE<n>) cannot be opened via
+  // Node's fs.openSync because Windows UCRT's _open_osfhandle rejects raw block
+  // devices with EINVAL, causing libuv to fail with UV_UNKNOWN.
+  // We delegate Windows physical disk writes to win-writer.ps1 which uses native
+  // Win32 CreateFileW, WriteFile, ReadFile, and FlushFileBuffers.
+  if (process.platform === 'win32' && isDevice(dest)) {
+    const winWriter = path.join(__dirname, 'win-writer.ps1');
+    const psArgs = [
+      '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+      '-File', winWriter,
+      '-Src', src,
+      '-Dest', dest,
+      '-Progress', progressPath,
+    ];
+    if (verify) psArgs.push('-Verify');
+
+    try {
+      execFileSync('powershell.exe', psArgs, {
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch (err) {
+      let state = null;
+      try { state = JSON.parse(fs.readFileSync(progressPath, 'utf8')); } catch {}
+      if (!state || !state.error) {
+        const stderr = String((err && (err.stderr || err.stdout)) || (err && err.message) || '').trim();
+        throw new Error(stderr || 'Windows disk write failed.');
+      }
+      process.exit(1);
+    }
+
+    settle(dest);
+    return;
+  }
+
   // macOS writes an order of magnitude faster through the raw character device.
   const target = process.platform === 'darwin' && isDevice(dest)
     ? dest.replace('/dev/disk', '/dev/rdisk')
@@ -312,9 +347,10 @@ async function main() {
   const started = Date.now();
   let lastReport = 0;
 
+  const isGz = src.endsWith('.gz');
   const source = fs.createReadStream(src, { highWaterMark: CHUNK });
   source.on('data', (b) => { readCompressed += b.length; });
-  const gunzip = source.pipe(zlib.createGunzip({ chunkSize: CHUNK }));
+  const dataStream = isGz ? source.pipe(zlib.createGunzip({ chunkSize: CHUNK })) : source;
 
   const flush = (buf) => {
     let done = 0;
@@ -323,7 +359,7 @@ async function main() {
   };
 
   try {
-    for await (const chunk of gunzip) {
+    for await (const chunk of dataStream) {
       hash.update(chunk);
       imageLen += chunk.length;
       pending = pending.length ? Buffer.concat([pending, chunk]) : chunk;

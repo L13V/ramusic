@@ -2,7 +2,8 @@
 // Spawns x11vnc on demand on DISPLAY=:0 and proxies WebSocket traffic to 127.0.0.1:5900.
 import net from 'node:net';
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { WebSocketServer } from 'ws';
 import { MOCK, run } from './sys.js';
 import * as auth from './auth.js';
@@ -11,23 +12,41 @@ const VNC_PORT = 5900;
 let vncProcess = null;
 let clientCount = 0;
 let idleTimer = null;
+let lastVncLog = '';
 const IDLE_TIMEOUT_MS = 60_000; // Stop x11vnc after 60s without clients
 
-function findXauth() {
+export function findXauth() {
   if (process.env.XAUTHORITY && existsSync(process.env.XAUTHORITY)) {
     return process.env.XAUTHORITY;
   }
-  const candidates = [
+
+  const staticCandidates = [
     '/home/ramtech/.Xauthority',
     '/root/.Xauthority',
   ];
-  for (const c of candidates) {
+  for (const c of staticCandidates) {
     if (existsSync(c)) return c;
   }
+
+  // Scan dynamic candidates created by startx or display managers
+  const searchDirs = ['/home/ramtech', '/tmp', '/run/user/1000'];
+  for (const dir of searchDirs) {
+    try {
+      if (!existsSync(dir)) continue;
+      const files = readdirSync(dir);
+      for (const f of files) {
+        if (f.startsWith('.serverauth') || f.startsWith('serverauth') || f.startsWith('xauth_') || f === '.Xauthority') {
+          const full = join(dir, f);
+          if (existsSync(full)) return full;
+        }
+      }
+    } catch {}
+  }
+
   return null;
 }
 
-function checkPortOpen(port, host = '127.0.0.1', timeout = 1000) {
+function checkPortOpen(port, host = '127.0.0.1', timeout = 800) {
   return new Promise((resolve) => {
     const s = new net.Socket();
     s.setTimeout(timeout);
@@ -61,6 +80,8 @@ export async function ensureVncServer() {
   const display = process.env.DISPLAY || ':0';
   const xauth = findXauth();
 
+  // Arguments for x11vnc
+  // Note: We avoid -bg so Node can directly supervise the process lifecycle and capture errors.
   const args = [
     '-display', display,
     '-forever',
@@ -68,10 +89,19 @@ export async function ensureVncServer() {
     '-nopw',
     '-listen', '127.0.0.1',
     '-rfbport', String(VNC_PORT),
-    '-bg',
-    '-o', '/tmp/x11vnc.log',
+    '-noxdamage',
+    '-repeat',
+    '-wait', '50',
   ];
-  if (xauth) args.push('-auth', xauth);
+
+  if (xauth) {
+    args.push('-auth', xauth);
+  } else {
+    // Built-in x11vnc mechanism: guesses X authority by inspecting running X processes
+    args.push('-auth', 'guess');
+  }
+
+  lastVncLog = '';
 
   try {
     const env = { ...process.env, DISPLAY: display };
@@ -79,15 +109,44 @@ export async function ensureVncServer() {
 
     const child = spawn('x11vnc', args, {
       env,
-      stdio: 'ignore',
-      detached: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
     });
-    child.unref();
+
+    child.stdout.on('data', (d) => {
+      const s = d.toString();
+      lastVncLog = (lastVncLog + s).slice(-2048);
+    });
+
+    child.stderr.on('data', (d) => {
+      const s = d.toString();
+      lastVncLog = (lastVncLog + s).slice(-2048);
+    });
+
+    let exitedEarly = false;
+    let exitError = '';
+    child.on('error', (err) => {
+      exitedEarly = true;
+      exitError = err.message;
+    });
+
+    child.on('close', (code) => {
+      if (vncProcess === child) {
+        vncProcess = null;
+      }
+      if (code !== 0) {
+        exitedEarly = true;
+        exitError = `x11vnc exited with code ${code}: ${lastVncLog.trim()}`;
+      }
+    });
+
     vncProcess = child;
 
-    // Wait up to 3s for port to start listening
-    for (let i = 0; i < 15; i++) {
+    // Poll up to 4s for VNC port to become available
+    for (let i = 0; i < 20; i++) {
       await new Promise((r) => setTimeout(r, 200));
+      if (exitedEarly) {
+        return { ok: false, error: exitError || 'x11vnc process terminated immediately' };
+      }
       if (await checkPortOpen(VNC_PORT)) {
         return { ok: true, port: VNC_PORT };
       }
@@ -96,12 +155,16 @@ export async function ensureVncServer() {
     return { ok: false, error: e.message };
   }
 
-  return { ok: false, error: 'x11vnc failed to start on port ' + VNC_PORT };
+  const logSnippet = lastVncLog.trim();
+  return {
+    ok: false,
+    error: `x11vnc failed to start on port ${VNC_PORT}${logSnippet ? ': ' + logSnippet : ''}`,
+  };
 }
 
 export function stopVncServer() {
   if (vncProcess) {
-    try { vncProcess.kill(); } catch {}
+    try { vncProcess.kill('SIGTERM'); } catch {}
     vncProcess = null;
   }
   if (!MOCK && process.platform === 'linux') {
@@ -116,6 +179,8 @@ export function vncStatus() {
     clients: clientCount,
     port: VNC_PORT,
     mock: MOCK,
+    processRunning: !!vncProcess,
+    lastLog: lastVncLog.slice(-500),
   };
 }
 
@@ -150,28 +215,27 @@ export function setupVncWebSocket(server) {
     }
 
     if (MOCK) {
-      // In mock mode, inform client or handle gracefully
-      ws.send(JSON.stringify({ type: 'mock', message: 'VNC running in mock mode on Windows/development' }));
+      // Inform client that mock mode is active
+      try {
+        ws.send(JSON.stringify({ type: 'mock', message: 'VNC running in mock mode on Windows/development' }));
+      } catch {}
       ws.on('close', () => {
         clientCount = Math.max(0, clientCount - 1);
       });
       return;
     }
 
-    await ensureVncServer();
+    const vncRes = await ensureVncServer();
+    if (!vncRes.ok) {
+      try {
+        ws.send(JSON.stringify({ type: 'error', error: vncRes.error }));
+        ws.close(1011, vncRes.error.slice(0, 120));
+      } catch {}
+      clientCount = Math.max(0, clientCount - 1);
+      return;
+    }
 
-    const tcpSocket = net.createConnection({ port: VNC_PORT, host: '127.0.0.1' }, () => {
-      // Direct raw binary piping between noVNC (WebSocket) and x11vnc (TCP)
-      ws.on('message', (msg) => {
-        try { tcpSocket.write(msg); } catch {}
-      });
-
-      tcpSocket.on('data', (chunk) => {
-        if (ws.readyState === ws.OPEN) {
-          try { ws.send(chunk); } catch {}
-        }
-      });
-    });
+    const tcpSocket = net.createConnection({ port: VNC_PORT, host: '127.0.0.1' });
 
     const cleanup = () => {
       try { tcpSocket.destroy(); } catch {}
@@ -188,5 +252,16 @@ export function setupVncWebSocket(server) {
     tcpSocket.on('close', cleanup);
     ws.on('error', cleanup);
     ws.on('close', cleanup);
+
+    // Direct raw binary piping between noVNC (WebSocket) and x11vnc (TCP)
+    ws.on('message', (msg) => {
+      try { tcpSocket.write(msg); } catch {}
+    });
+
+    tcpSocket.on('data', (chunk) => {
+      if (ws.readyState === ws.OPEN) {
+        try { ws.send(chunk, { binary: true }); } catch {}
+      }
+    });
   });
 }

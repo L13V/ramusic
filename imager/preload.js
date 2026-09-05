@@ -20,4 +20,9 @@ contextBridge.exposeInMainWorld('imager', {
 
   write: (opts) => ipcRenderer.invoke('write:start', opts),
   onWriteProgress: (cb) => ipcRenderer.on('write:progress', (_e, p) => cb(p)),
+
+  saveImageDialog: (opts) => ipcRenderer.invoke('image:save-dialog', opts),
+  exportImage: (opts) => ipcRenderer.invoke('image:export', opts),
+  onExportProgress: (cb) => ipcRenderer.on('export:progress', (_e, p) => cb(p)),
+  showItemInFolder: (path) => ipcRenderer.invoke('app:show-item', path),
 });

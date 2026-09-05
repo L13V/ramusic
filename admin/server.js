@@ -11,6 +11,8 @@ import * as ota from './lib/ota.js';
 import * as net from './lib/net.js';
 import * as audio from './lib/audio.js';
 import * as vnc from './lib/vnc.js';
+import * as dns from './lib/dns.js';
+import * as terminal from './lib/terminal.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.ADMIN_PORT || 8080);
@@ -77,6 +79,14 @@ app.get('/api/vnc/status', wrap(() => vnc.vncStatus()));
 app.post('/api/vnc/start', wrap(() => vnc.ensureVncServer()));
 app.post('/api/vnc/stop', wrap(() => { vnc.stopVncServer(); return { ok: true }; }));
 
+// ── DNS over HTTPS (DoH) ─────────────────────────────────────
+app.get('/api/dns', wrap(() => dns.status()));
+app.post('/api/dns', wrap((req) => dns.updateSettings(req.body)));
+app.post('/api/dns/test', wrap((req) => dns.testResolution(req.body?.domain)));
+
+// ── Console Terminal ─────────────────────────────────────────
+app.post('/api/terminal/exec', wrap((req) => terminal.execCommand(req.body?.command, { timeout: req.body?.timeout })));
+
 // ── OS packages / power ──────────────────────────────────────
 app.post('/api/apt/upgrade', wrap(() => sys.startAptUpgrade()));
 app.get('/api/apt/status', wrap(() => sys.jobStatus('apt') || { running: false, log: '', code: null }));
@@ -84,6 +94,7 @@ app.post('/api/power/:action', wrap((req) => sys.power(req.params.action)));
 
 const server = http.createServer(app);
 vnc.setupVncWebSocket(server);
+terminal.setupTerminalWebSocket(server);
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`RAMTECH admin listening on http://0.0.0.0:${PORT}${sys.MOCK ? '  [MOCK MODE]' : ''}`);

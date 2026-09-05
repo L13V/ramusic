@@ -67,6 +67,38 @@ pre{background:#07090c;border:1px solid var(--brd);border-radius:10px;padding:14
 #vncCanvasWrap canvas{max-width:100%;max-height:100%;object-fit:contain}
 .slider-wrap{display:flex;align-items:center;gap:12px;width:100%}
 .slider-wrap input[type=range]{flex:1;accent-color:var(--accent);height:6px;border-radius:99px;cursor:pointer}
+
+/* DNS Presets */
+.preset-wrap{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+.preset-btn{padding:4px 10px;font-size:11px;background:var(--panel2);border:1px solid var(--brd);border-radius:6px;cursor:pointer;color:var(--dim)}
+.preset-btn:hover{background:var(--panel);color:var(--fg);border-color:var(--accent)}
+.preset-btn.active{background:rgba(0,170,255,.15);border-color:var(--accent);color:var(--accent);font-weight:600}
+
+/* Console Terminal */
+.term-card{grid-column:1/-1}
+.term-wrap{background:#070a0e;border:1px solid var(--brd);border-radius:10px;overflow:hidden;display:flex;flex-direction:column}
+.term-toolbar{display:flex;align-items:center;gap:8px;padding:8px 12px;background:#0d121a;border-bottom:1px solid var(--brd);font-size:12px}
+.term-toolbar .acts{margin-left:auto;display:flex;gap:6px}
+.term-screen{height:300px;overflow-y:auto;padding:12px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;font-size:12px;line-height:1.45;color:#cdd6f4;white-space:pre-wrap;word-break:break-all;user-select:text}
+.term-input-row{display:flex;align-items:center;background:#090d13;border-top:1px solid var(--brd);padding:6px 12px;gap:8px}
+.term-prompt{color:var(--accent);font-family:monospace;font-weight:700;font-size:12px;white-space:nowrap;user-select:none}
+.term-input{flex:1;background:transparent;border:0;outline:none;color:#fff;font-family:monospace;font-size:12px;padding:4px 0}
+.term-chips{display:flex;gap:6px;flex-wrap:wrap;padding:8px 12px;background:#0b0f16;border-top:1px solid var(--brd)}
+.term-chip{font-size:11px;padding:3px 8px;background:var(--panel2);border:1px solid var(--brd);border-radius:6px;color:var(--dim);cursor:pointer}
+.term-chip:hover{color:var(--accent);border-color:var(--accent)}
+
+/* Mock TV screen styling */
+.tv-frame{width:100%;max-width:820px;aspect-ratio:16/9;background:#0b0e14;border:2px solid #222938;border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.8);display:flex;flex-direction:column;position:relative;overflow:hidden}
+.tv-header{height:44px;display:flex;align-items:center;padding:0 20px;background:rgba(255,255,255,.03);border-bottom:1px solid rgba(255,255,255,.06);font-size:12px;gap:12px}
+.tv-body{flex:1;display:flex;align-items:center;justify-content:center;padding:24px;gap:36px}
+.tv-art{width:160px;height:160px;border-radius:14px;background:linear-gradient(135deg,#1db954 0%,#004422 100%);display:flex;align-items:center;justify-content:center;font-size:56px;box-shadow:0 10px 30px rgba(29,185,84,.25)}
+.tv-meta{display:flex;flex-direction:column;gap:6px;max-width:360px}
+.tv-track{font-size:22px;font-weight:800;letter-spacing:-.02em}
+.tv-artist{font-size:15px;color:var(--dim)}
+.tv-controls{display:flex;align-items:center;gap:12px;margin-top:10px}
+.tv-controls button{padding:6px 14px;font-size:13px}
+.tv-bar{height:4px;background:rgba(255,255,255,.1);border-radius:99px;margin-top:10px;overflow:hidden}
+.tv-bar-fill{width:42%;height:100%;background:var(--ok);border-radius:99px;transition:width 1s linear}
 </style>
 </head>
 <body>
@@ -151,6 +183,35 @@ pre{background:#07090c;border:1px solid var(--brd);border-radius:10px;padding:14
     </div>
 
     <div class="card">
+      <h2>DNS over HTTPS (DoH)</h2>
+      <div class="row" style="border:0;padding-top:0">
+        <div class="name">Quad9 DoH (9.9.9.9)<div class="sub" id="dohSub">Encrypted DNS via RFC 8484 over HTTP/2</div></div>
+        <div class="toggle on" id="dohTgl" onclick="toggleDoh()"><i></i></div>
+      </div>
+      <div id="dohStatusBadge" class="badge up" style="display:inline-block;margin:6px 0 10px">Active · 127.0.0.1:53</div>
+      <div class="field" style="margin-top:4px">
+        <label>Upstream DoH Provider URL</label>
+        <div class="inline">
+          <input id="dohUpstream" placeholder="https://dns.quad9.com/dns-query" value="https://dns.quad9.com/dns-query">
+          <button onclick="saveDoh()">Save</button>
+        </div>
+        <div class="preset-wrap">
+          <span class="preset-btn active" id="btnQuad9" onclick="setDohPreset('https://dns.quad9.com/dns-query', 'btnQuad9')">Quad9 (9.9.9.9)</span>
+          <span class="preset-btn" id="btnCloudflare" onclick="setDohPreset('https://cloudflare-dns.com/dns-query', 'btnCloudflare')">Cloudflare (1.1.1.1)</span>
+          <span class="preset-btn" id="btnGoogle" onclick="setDohPreset('https://dns.google/dns-query', 'btnGoogle')">Google (8.8.8.8)</span>
+        </div>
+      </div>
+      <div class="field" style="margin-top:12px;border-top:1px solid var(--brd);padding-top:10px">
+        <label>Test DoH Resolution</label>
+        <div class="inline">
+          <input id="dohTestDomain" placeholder="spotify.com" value="spotify.com" style="max-width:200px">
+          <button onclick="testDoh()">Test Query</button>
+        </div>
+        <div id="dohTestMsg" class="msg"></div>
+      </div>
+    </div>
+
+    <div class="card">
       <h2>Audio Output</h2>
       <div id="audioOutputs"></div>
       <div id="audioControls" class="hidden" style="margin-top:14px;padding-top:12px;border-top:1px solid var(--brd)">
@@ -196,6 +257,32 @@ pre{background:#07090c;border:1px solid var(--brd);border-radius:10px;padding:14
       <div class="inline" style="margin-top:16px">
         <button class="danger" onclick="power('reboot')">⟳ Reboot</button>
         <button class="danger" onclick="power('poweroff')">⏻ Shut down</button>
+      </div>
+    </div>
+  <div class="card term-card">
+    <div style="display:flex;align-items:center;margin-bottom:14px">
+      <h2 style="margin-bottom:0">Console Terminal</h2>
+      <span id="termStatus" class="badge" style="margin-left:12px">Connecting…</span>
+      <div style="margin-left:auto;display:flex;gap:8px">
+        <button onclick="clearTerm()" style="font-size:12px;padding:4px 10px">Clear</button>
+        <button onclick="sendTermInterrupt()" class="danger" style="font-size:12px;padding:4px 10px" title="Send SIGINT (Ctrl+C)">Ctrl+C</button>
+      </div>
+    </div>
+    <div class="term-wrap">
+      <div id="termScreen" class="term-screen"></div>
+      <div class="term-input-row">
+        <span class="term-prompt">ramtech:~$</span>
+        <input id="termInput" class="term-input" placeholder="Type a command and press Enter..." autocomplete="off" spellcheck="false">
+        <button class="primary" onclick="submitTermInput()" style="padding:4px 12px;font-size:12px">Run</button>
+      </div>
+      <div class="term-chips">
+        <span style="font-size:11px;color:var(--faint);display:flex;align-items:center">Quick:</span>
+        <span class="term-chip" onclick="quickTerm('systemctl status spotify-tv-jam ramtech-admin --no-pager')">Service Status</span>
+        <span class="term-chip" onclick="quickTerm('ip -br a')">Network IPs</span>
+        <span class="term-chip" onclick="quickTerm('df -h && free -h')">Disk & Mem</span>
+        <span class="term-chip" onclick="quickTerm('journalctl -u spotify-tv-jam -n 30 --no-pager')">Jam Logs</span>
+        <span class="term-chip" onclick="quickTerm('curl -Iv https://9.9.9.9')">Quad9 TLS</span>
+        <span class="term-chip" onclick="quickTerm('uname -a')">Kernel</span>
       </div>
     </div>
   </div>
@@ -245,6 +332,37 @@ pre{background:#07090c;border:1px solid var(--brd);border-radius:10px;padding:14
 
 <script>
 const $ = (id) => document.getElementById(id);
+function escapeHtml(s) {
+  if (s == null) return '';
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+function ansiToHtml(str) {
+  if (!str) return '';
+  const colors = {
+    30: '#4c566a', 31: '#ff5555', 32: '#50fa7b', 33: '#f1fa8c',
+    34: '#bd93f9', 35: '#ff79c6', 36: '#8be9fd', 37: '#f8f8f2',
+    90: '#6272a4', 91: '#ff6e6e', 92: '#69ff94', 93: '#ffffa5',
+    94: '#d6acff', 95: '#ff92df', 96: '#a4ffff', 97: '#ffffff',
+  };
+  let out = escapeHtml(str);
+  out = out.replace(/\x1b\[0m/g, '</span>');
+  out = out.replace(/\x1b\[1m/g, '<span style="font-weight:700">');
+  out = out.replace(/\x1b\[([0-9;]+)m/g, (match, codes) => {
+    let style = '';
+    for (const code of codes.split(';')) {
+      const c = parseInt(code, 10);
+      if (colors[c]) style += `color:${colors[c]};`;
+      else if (c === 1) style += 'font-weight:700;';
+    }
+    return style ? `<span style="${style}">` : '';
+  });
+  return out;
+}
 const api = async (path, opts) => {
   const r = await fetch('/api' + path, { headers: { 'content-type': 'application/json' }, ...opts });
   if (r.status === 401) { show(false); throw new Error('auth'); }
@@ -528,9 +646,199 @@ async function toggleMute() {
   refreshAudio();
 }
 
+// ── DNS over HTTPS (DoH) ──
+let dohEnabled = true;
+async function refreshDns() {
+  try {
+    const s = await api('/dns');
+    dohEnabled = !!s.enabled;
+    $('dohTgl').classList.toggle('on', dohEnabled);
+    $('dohUpstream').value = s.upstream || 'https://dns.quad9.com/dns-query';
+    const badge = $('dohStatusBadge');
+    if (s.enabled) {
+      badge.textContent = s.active ? 'Active · 127.0.0.1:53' : 'Starting…';
+      badge.className = 'badge up';
+    } else {
+      badge.textContent = 'Disabled (Using DHCP DNS)';
+      badge.className = 'badge';
+    }
+    updatePresetHighlight(s.upstream);
+  } catch {}
+}
+
+function updatePresetHighlight(url) {
+  $('btnQuad9')?.classList.toggle('active', url?.includes('quad9'));
+  $('btnCloudflare')?.classList.toggle('active', url?.includes('cloudflare'));
+  $('btnGoogle')?.classList.toggle('active', url?.includes('google'));
+}
+
+function setDohPreset(url, btnId) {
+  $('dohUpstream').value = url;
+  document.querySelectorAll('.preset-btn').forEach(b => b.classList.remove('active'));
+  $(btnId)?.classList.add('active');
+  saveDoh();
+}
+
+async function toggleDoh() {
+  const newEnabled = !dohEnabled;
+  dohEnabled = newEnabled;
+  $('dohTgl').classList.toggle('on', dohEnabled);
+  const badge = $('dohStatusBadge');
+  badge.textContent = dohEnabled ? 'Enabling…' : 'Disabling…';
+  badge.className = 'badge';
+  await post('/dns', { enabled: dohEnabled });
+  refreshDns();
+}
+
+async function saveDoh() {
+  const upstream = $('dohUpstream').value.trim();
+  if (!upstream) return;
+  const msg = $('dohTestMsg');
+  msg.className = 'msg';
+  msg.textContent = 'Saving DNS settings…';
+  const r = await post('/dns', { upstream, enabled: dohEnabled });
+  if (r.ok) {
+    msg.className = 'msg ok';
+    msg.textContent = 'Settings saved ✓';
+    setTimeout(() => { if (msg.textContent === 'Settings saved ✓') msg.textContent = ''; }, 3000);
+    refreshDns();
+  } else {
+    msg.className = 'msg err';
+    msg.textContent = r.error || 'Failed to save settings';
+  }
+}
+
+async function testDoh() {
+  const domain = $('dohTestDomain').value.trim() || 'spotify.com';
+  const msg = $('dohTestMsg');
+  msg.className = 'msg';
+  msg.textContent = `Resolving ${domain} via DoH…`;
+  try {
+    const r = await post('/dns/test', { domain });
+    if (r.ok) {
+      msg.className = 'msg ok';
+      const ips = (r.answers || []).map(a => a.ip).join(', ') || 'OK (No IPs)';
+      msg.textContent = `✓ Resolved in ${r.latencyMs}ms: ${ips}`;
+    } else {
+      msg.className = 'msg err';
+      msg.textContent = `✕ Failed: ${r.error || 'RCODE ' + r.rcode}`;
+    }
+  } catch (e) {
+    msg.className = 'msg err';
+    msg.textContent = `✕ Error: ${e.message}`;
+  }
+}
+
+// ── Console Terminal ──
+let termWs = null;
+let termHistory = [];
+let historyIndex = -1;
+
+function initTerminal() {
+  if (termWs && (termWs.readyState === WebSocket.OPEN || termWs.readyState === WebSocket.CONNECTING)) return;
+  const badge = $('termStatus');
+  badge.textContent = 'Connecting…';
+  badge.className = 'badge';
+
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  try {
+    termWs = new WebSocket(`${proto}//${location.host}/ws/terminal`);
+    termWs.onopen = () => {
+      badge.textContent = 'Connected ✓';
+      badge.className = 'badge up';
+    };
+    termWs.onmessage = (e) => {
+      appendTermText(e.data);
+    };
+    termWs.onclose = () => {
+      badge.textContent = 'Disconnected';
+      badge.className = 'badge';
+    };
+    termWs.onerror = () => {
+      badge.textContent = 'Offline';
+      badge.className = 'badge';
+    };
+  } catch {
+    badge.textContent = 'HTTP Fallback';
+    badge.className = 'badge';
+  }
+}
+
+function appendTermText(txt) {
+  const screen = $('termScreen');
+  if (!screen) return;
+  const atBottom = screen.scrollHeight - screen.scrollTop <= screen.clientHeight + 60;
+  screen.innerHTML += ansiToHtml(txt);
+  if (atBottom) screen.scrollTop = screen.scrollHeight;
+}
+
+function submitTermInput() {
+  const input = $('termInput');
+  const cmd = input.value.trim();
+  if (!cmd) return;
+
+  termHistory.push(cmd);
+  historyIndex = termHistory.length;
+  input.value = '';
+
+  if (termWs && termWs.readyState === WebSocket.OPEN) {
+    termWs.send(cmd + '\n');
+  } else {
+    appendTermText(`\r\n\x1b[36mramtech:~$\x1b[0m ${escapeHtml(cmd)}\r\n`);
+    post('/terminal/exec', { command: cmd }).then((r) => {
+      if (r.stdout) appendTermText(r.stdout);
+      if (r.stderr) appendTermText(`\x1b[31m${r.stderr}\x1b[0m\r\n`);
+      if (r.code !== 0) appendTermText(`\x1b[90m[Exit code: ${r.code}]\x1b[0m\r\n`);
+    }).catch(e => {
+      appendTermText(`\x1b[31mError: ${e.message}\x1b[0m\r\n`);
+    });
+  }
+}
+
+function quickTerm(cmd) {
+  $('termInput').value = cmd;
+  submitTermInput();
+}
+
+function clearTerm() {
+  const screen = $('termScreen');
+  if (screen) screen.innerHTML = '';
+}
+
+function sendTermInterrupt() {
+  if (termWs && termWs.readyState === WebSocket.OPEN) {
+    termWs.send(JSON.stringify({ type: 'signal', signal: 'SIGINT' }));
+  }
+}
+
+$('termInput')?.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    submitTermInput();
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    if (historyIndex > 0) {
+      historyIndex--;
+      e.target.value = termHistory[historyIndex] || '';
+    }
+  } else if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    if (historyIndex < termHistory.length - 1) {
+      historyIndex++;
+      e.target.value = termHistory[historyIndex] || '';
+    } else {
+      historyIndex = termHistory.length;
+      e.target.value = '';
+    }
+  }
+});
+
 // ── Remote Desktop (noVNC) ──
 let rfb = null;
 let vncMock = false;
+let mockTimer = null;
+let mockPlaySeconds = 74;
+let mockIsPlaying = true;
 
 async function openRemoteDesktop() {
   $('vncModal').classList.remove('hidden');
@@ -542,6 +850,10 @@ function closeRemoteDesktop() {
   if (rfb) {
     try { rfb.disconnect(); } catch {}
     rfb = null;
+  }
+  if (mockTimer) {
+    clearInterval(mockTimer);
+    mockTimer = null;
   }
   $('vncCanvasWrap').innerHTML = '';
   $('vncModal').classList.add('hidden');
@@ -560,19 +872,24 @@ async function connectVnc() {
   } catch {}
 
   if (vncMock) {
-    $('vncStateBadge').textContent = 'Mock Screen (:0)';
+    $('vncStateBadge').textContent = 'TV Screen (:0) · Active';
     $('vncStateBadge').className = 'badge up';
+    renderMockTvDisplay(target);
+    return;
+  }
+
+  // Ensure x11vnc is started on server
+  $('vncStateBadge').textContent = 'Starting x11vnc…';
+  const startRes = await post('/vnc/start').catch(e => ({ ok: false, error: e.message }));
+  if (!startRes.ok) {
+    $('vncStateBadge').textContent = 'x11vnc failed';
+    $('vncStateBadge').className = 'badge err';
     target.innerHTML = `
-      <div style="text-align:center;padding:30px;color:var(--dim);max-width:540px">
-        <div style="font-size:48px;margin-bottom:12px">🖥</div>
-        <div style="font-size:18px;font-weight:700;color:var(--fg);margin-bottom:8px">Mock Remote Desktop Active</div>
-        <p style="font-size:13px;line-height:1.5;margin-bottom:18px">
-          You are running in development / mock mode. On RAMTECH OS hardware (Debian/Linux),
-          x11vnc transmits the live TV display (:0) directly over WebSockets into this viewer.
-        </p>
-        <div style="background:#141922;border:1px solid var(--brd);border-radius:10px;padding:14px;font-family:monospace;font-size:12px;color:var(--accent)">
-          DISPLAY=:0 · x11vnc :5900 · noVNC RFB ✓
-        </div>
+      <div style="text-align:center;padding:30px;color:var(--bad);max-width:540px">
+        <div style="font-size:36px;margin-bottom:12px">⚠️</div>
+        <div style="font-size:16px;font-weight:700;color:var(--fg);margin-bottom:8px">Failed to start x11vnc server</div>
+        <p style="font-size:13px;line-height:1.5;color:var(--dim);margin-bottom:16px">${escapeHtml(startRes.error || 'Unknown error starting VNC')}</p>
+        <button class="primary" onclick="connectVnc()">⟳ Retry</button>
       </div>`;
     return;
   }
@@ -585,7 +902,7 @@ async function connectVnc() {
     } catch (e) {
       $('vncStateBadge').textContent = 'noVNC load error';
       $('vncStateBadge').className = 'badge err';
-      target.innerHTML = `<div class="msg err">Failed to load noVNC: ${escapeHtml(e.message)}</div>`;
+      target.innerHTML = `<div class="msg err" style="padding:20px">Failed to load noVNC: ${escapeHtml(e.message)}</div>`;
       return;
     }
   }
@@ -595,7 +912,8 @@ async function connectVnc() {
 
   try {
     rfb = new window.RFB(target, url, {
-      credentials: { password: '' }
+      credentials: { password: '' },
+      wsProtocols: ['binary'],
     });
     rfb.scaleViewport = true;
     rfb.resizeSession = false;
@@ -610,11 +928,83 @@ async function connectVnc() {
       $('vncStateBadge').textContent = e.detail?.clean ? 'Disconnected' : 'Connection closed';
       $('vncStateBadge').className = 'badge';
     });
+    rfb.addEventListener('securityfailure', (e) => {
+      $('vncStateBadge').textContent = 'Auth failed';
+      $('vncStateBadge').className = 'badge err';
+    });
   } catch (e) {
     $('vncStateBadge').textContent = 'Failed';
     $('vncStateBadge').className = 'badge err';
-    target.innerHTML = `<div class="msg err">VNC connection error: ${escapeHtml(e.message)}</div>`;
+    target.innerHTML = `<div class="msg err" style="padding:20px">VNC connection error: ${escapeHtml(e.message)}</div>`;
   }
+}
+
+function renderMockTvDisplay(target) {
+  if (mockTimer) clearInterval(mockTimer);
+  target.innerHTML = `
+    <div class="tv-frame">
+      <div class="tv-header">
+        <span style="display:flex;align-items:center;gap:6px"><span class="dot on"></span> RAMTECH TV DISPLAY</span>
+        <span style="margin-left:auto;color:var(--dim);font-family:monospace" id="mockTvClock">12:00:00</span>
+        <span class="chip" style="background:#141b24;border-color:rgba(255,255,255,.1)">JAM · RAM-4921</span>
+      </div>
+      <div class="tv-body">
+        <div class="tv-art">🎵</div>
+        <div class="tv-meta">
+          <div style="font-size:12px;letter-spacing:.1em;color:var(--accent);font-weight:700;text-transform:uppercase">Now Playing</div>
+          <div class="tv-track">Starboy</div>
+          <div class="tv-artist">The Weeknd, Daft Punk · Starboy</div>
+          <div class="tv-bar"><div id="mockTvProgress" class="tv-bar-fill"></div></div>
+          <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--dim);margin-top:4px">
+            <span id="mockTvTime">1:14</span>
+            <span>3:50</span>
+          </div>
+          <div class="tv-controls">
+            <button onclick="toggleMockPlay()"><span id="mockPlayIcon">⏸ Pause</span></button>
+            <button onclick="nextMockTrack()">⏭ Next</button>
+            <span style="font-size:12px;color:var(--dim);margin-left:auto">TV Screen (:0)</span>
+          </div>
+        </div>
+      </div>
+    </div>`;
+
+  const updateClock = () => {
+    const el = $('mockTvClock');
+    if (el) el.textContent = new Date().toLocaleTimeString();
+    if (mockIsPlaying) {
+      mockPlaySeconds = (mockPlaySeconds + 1) % 230;
+      const m = Math.floor(mockPlaySeconds / 60);
+      const s = String(mockPlaySeconds % 60).padStart(2, '0');
+      const timeEl = $('mockTvTime');
+      const progEl = $('mockTvProgress');
+      if (timeEl) timeEl.textContent = `${m}:${s}`;
+      if (progEl) progEl.style.width = `${(mockPlaySeconds / 230) * 100}%`;
+    }
+  };
+  updateClock();
+  mockTimer = setInterval(updateClock, 1000);
+}
+
+function toggleMockPlay() {
+  mockIsPlaying = !mockIsPlaying;
+  const icon = $('mockPlayIcon');
+  if (icon) icon.textContent = mockIsPlaying ? '⏸ Pause' : '▶ Play';
+}
+
+function nextMockTrack() {
+  mockPlaySeconds = 0;
+  const tracks = [
+    { t: 'Starboy', a: 'The Weeknd, Daft Punk · Starboy', e: '🎵' },
+    { t: 'Blinding Lights', a: 'The Weeknd · After Hours', e: '⚡' },
+    { t: 'One More Time', a: 'Daft Punk · Discovery', e: '💿' },
+  ];
+  const item = tracks[Math.floor(Math.random() * tracks.length)];
+  const trackEl = document.querySelector('.tv-track');
+  const artistEl = document.querySelector('.tv-artist');
+  const artEl = document.querySelector('.tv-art');
+  if (trackEl) trackEl.textContent = item.t;
+  if (artistEl) artistEl.textContent = item.a;
+  if (artEl) artEl.textContent = item.e;
 }
 
 function reconnectVnc() {
@@ -634,9 +1024,10 @@ function toggleVncFullscreen() {
 // ── Boot ──
 let pollTimer = null;
 function boot() {
-  refreshStatus(); refreshServices(); refreshNet(); loadUpdateSettings(); loadLogs(); refreshAudio();
+  refreshStatus(); refreshServices(); refreshNet(); refreshDns(); loadUpdateSettings(); loadLogs(); refreshAudio();
+  initTerminal();
   clearInterval(pollTimer);
-  pollTimer = setInterval(() => { refreshStatus(); refreshServices(); refreshAudio(); }, 10_000);
+  pollTimer = setInterval(() => { refreshStatus(); refreshServices(); refreshAudio(); refreshDns(); }, 10_000);
 }
 (async () => {
   const s = await fetch('/api/session').then(r => r.json()).catch(() => ({}));

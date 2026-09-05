@@ -75,7 +75,10 @@
      display's scaling factor does to the height of the steps above it. -->
 <footer class="actions">
   <p id="write-hint" class="muted"></p>
-  <button id="write" class="primary" disabled>Write to USB</button>
+  <div class="action-buttons">
+    <button id="export" class="secondary" disabled>Export as .img.gz</button>
+    <button id="write" class="primary" disabled>Write to USB</button>
+  </div>
 </footer>
 
 <div id="busy" class="overlay" hidden>
@@ -84,7 +87,19 @@
     <div class="bar"><div id="busy-fill"></div></div>
     <p id="busy-detail" class="muted"></p>
     <div id="busy-log" class="log-preview" hidden></div>
-    <p class="muted small">Leave the stick plugged in until this finishes.</p>
+    <p id="busy-sub" class="muted small">Leave the stick plugged in until this finishes.</p>
+  </div>
+</div>
+
+<div id="export-done" class="overlay" hidden>
+  <div class="panel">
+    <h2 class="ok">Image exported successfully</h2>
+    <p class="muted">Your RAMTECH OS disk image was saved to:</p>
+    <div id="export-path" class="path-box"></div>
+    <div class="panel-actions">
+      <button id="export-show" class="primary">Show in folder</button>
+      <button id="export-close" class="ghost">Done</button>
+    </div>
   </div>
 </div>
 
