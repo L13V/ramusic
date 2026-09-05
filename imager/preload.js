@@ -11,6 +11,11 @@ contextBridge.exposeInMainWorld('imager', {
   downloadImage: (release) => ipcRenderer.invoke('image:download', release),
   onDownloadProgress: (cb) => ipcRenderer.on('image:progress', (_e, p) => cb(p)),
 
+  buildStatus: () => ipcRenderer.invoke('build:status'),
+  startBuild: (opts) => ipcRenderer.invoke('build:start', opts),
+  cancelBuild: () => ipcRenderer.invoke('build:cancel'),
+  onBuildProgress: (cb) => ipcRenderer.on('build:progress', (_e, p) => cb(p)),
+
   listDrives: () => ipcRenderer.invoke('drives:list'),
 
   write: (opts) => ipcRenderer.invoke('write:start', opts),

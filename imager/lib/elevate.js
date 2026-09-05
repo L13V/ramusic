@@ -16,7 +16,7 @@ const CHILD = path.join(__dirname, 'writer-child.js');
  * names like `fltmc` fail with ENOENT and read as "not elevated" forever.
  */
 function winTool(name) {
-  const root = process.env.SystemRoot || 'C:\Windows';
+  const root = process.env.SystemRoot || 'C:\\Windows';
   const wow64 = process.arch === 'ia32' && (process.env.PROCESSOR_ARCHITEW6432 ||
     process.env.PROCESSOR_ARCHITECTURE === 'AMD64');
   const dirs = wow64 ? ['Sysnative', 'System32'] : ['System32'];
@@ -37,7 +37,7 @@ function isElevated() {
     // ENOENT means the probe itself never ran — fall back to something that
     // only an elevated process can do, rather than reporting a false negative.
     if (err && err.code === 'ENOENT') {
-      try { fs.closeSync(fs.openSync('\\.\PHYSICALDRIVE0', 'r')); return true; }
+      try { fs.closeSync(fs.openSync('\\\\.\\PHYSICALDRIVE0', 'r')); return true; }
       catch { /* genuinely unelevated, or no disk 0 */ }
     }
     return false;

@@ -1,7 +1,16 @@
 'use strict';
 
 const $ = (id) => document.getElementById(id);
-const state = { image: null, release: null, drive: null, platform: '', busy: false };
+const state = {
+  image: null,
+  release: null,
+  build: null,
+  buildStatus: null,
+  forceRebuild: false,
+  drive: null,
+  platform: '',
+  busy: false,
+};
 
 const fmt = (b) => {
   if (!b && b !== 0) return '';
@@ -31,10 +40,12 @@ const fmt = (b) => {
   $('app').hidden = false;
 
   loadLatest();
+  loadBuildStatus();
   refreshDrives();
   setInterval(() => { if (!state.busy) refreshDrives(); }, 4000);
 
   $('browse').onclick = pickFile;
+  $('rebuild').onclick = triggerRebuild;
   $('refresh').onclick = refreshDrives;
   $('write').onclick = startWrite;
   $('again').onclick = () => { $('done').hidden = true; refreshDrives(); };
@@ -48,10 +59,19 @@ const fmt = (b) => {
       total ? received / total : 0,
       `${fmt(received)} of ${fmt(total)}`);
   });
+  window.imager.onBuildProgress(({ phase, line, recent }) => {
+    showBusy('Building RAMTECH OS…', 0, line || 'Compiling and packaging live image…', true);
+    const box = $('busy-log');
+    if (box && recent) {
+      box.hidden = false;
+      box.textContent = recent.join('\n');
+      box.scrollTop = box.scrollHeight;
+    }
+  });
   window.imager.onWriteProgress(onWriteProgress);
 })();
 
-// ── Step 1 ───────────────────────────────────────────────────
+// ── Step 1: Image Selection & Build ───────────────────────────
 async function loadLatest() {
   try {
     state.release = await window.imager.latestRelease();
@@ -60,8 +80,44 @@ async function loadLatest() {
   } catch (err) {
     state.release = null;
     $('latest-detail').textContent = `Not available — ${err.message}`;
-    document.querySelector('input[value=file]').checked = true;
+    if (usingLatest()) {
+      document.querySelector('input[value=build]').checked = true;
+    }
   }
+  syncSource();
+  updateWriteButton();
+}
+
+async function loadBuildStatus() {
+  try {
+    const status = await window.imager.buildStatus();
+    state.buildStatus = status;
+    if (status.local && status.local.exists) {
+      state.build = status.local;
+      $('build-detail').textContent = `${status.local.name} · ${fmt(status.local.size)} (built locally)`;
+      $('rebuild').style.display = 'inline-block';
+    } else if (status.docker && status.docker.available) {
+      state.build = null;
+      $('build-detail').textContent = 'Ready to build with Docker (~15-30m)';
+      $('rebuild').style.display = 'none';
+    } else {
+      state.build = null;
+      $('build-detail').textContent = 'Docker Desktop required to build from source';
+      $('rebuild').style.display = 'none';
+    }
+  } catch (err) {
+    state.build = null;
+    $('build-detail').textContent = `Build check: ${err.message}`;
+  }
+  syncSource();
+  updateWriteButton();
+}
+
+function triggerRebuild(e) {
+  if (e) { e.preventDefault(); e.stopPropagation(); }
+  document.querySelector('input[value=build]').checked = true;
+  state.forceRebuild = true;
+  $('build-detail').textContent = 'Will run clean rebuild with Docker before writing';
   syncSource();
   updateWriteButton();
 }
@@ -77,13 +133,28 @@ async function pickFile() {
   updateWriteButton();
 }
 
-function usingLatest() { return document.querySelector('input[name=source]:checked').value === 'latest'; }
-
-function syncSource() {
-  if (usingLatest()) state.image = null;
+function usingLatest() {
+  const el = document.querySelector('input[name=source]:checked');
+  return el ? el.value === 'latest' : true;
+}
+function usingBuild() {
+  const el = document.querySelector('input[name=source]:checked');
+  return el ? el.value === 'build' : false;
+}
+function usingFile() {
+  const el = document.querySelector('input[name=source]:checked');
+  return el ? el.value === 'file' : false;
 }
 
-// ── Step 2 ───────────────────────────────────────────────────
+function syncSource() {
+  if (usingLatest()) {
+    state.image = null;
+  } else if (usingBuild()) {
+    state.image = state.forceRebuild ? null : state.build;
+  }
+}
+
+// ── Step 2: Drive Selection ──────────────────────────────────
 async function refreshDrives() {
   const { drives, error } = await window.imager.listDrives();
   const box = $('drives');
@@ -111,19 +182,43 @@ async function refreshDrives() {
   updateWriteButton();
 }
 
-// ── Step 3 ───────────────────────────────────────────────────
+// ── Step 3: Write / Build & Write ────────────────────────────
 function updateWriteButton() {
-  const haveImage = usingLatest() ? Boolean(state.release) : Boolean(state.image);
+  let haveImage = false;
+  if (usingLatest()) {
+    haveImage = Boolean(state.release);
+  } else if (usingBuild()) {
+    haveImage = Boolean(
+      (state.build && !state.forceRebuild) ||
+      (state.buildStatus && state.buildStatus.docker && state.buildStatus.docker.available) ||
+      state.forceRebuild
+    );
+  } else {
+    haveImage = Boolean(state.image);
+  }
+
   const ok = haveImage && Boolean(state.drive) && !state.busy;
   $('write').disabled = !ok;
-  $('write-hint').textContent = !haveImage ? 'Pick an image first.'
+
+  const willBuild = usingBuild() && (!state.build || state.forceRebuild);
+  $('write').textContent = willBuild ? 'Build & Write to USB' : 'Write to USB';
+
+  $('write-hint').textContent = !haveImage
+    ? (usingBuild() ? 'Docker Desktop or an existing build is needed.' : 'Pick an image first.')
     : !state.drive ? 'Pick a USB stick first.'
-    : `Erases ${state.drive.description} (${fmt(state.drive.size)}) completely.`;
+    : willBuild
+      ? `Builds RAMTECH OS and erases ${state.drive.description} (${fmt(state.drive.size)}).`
+      : `Erases ${state.drive.description} (${fmt(state.drive.size)}) completely.`;
 }
 
 async function startWrite() {
   const drive = state.drive;
-  if (!confirm(`Erase ${drive.description} (${fmt(drive.size)}) and write RAMTECH OS to it?\n\nEverything on that stick will be lost.`)) return;
+  const willBuild = usingBuild() && (!state.build || state.forceRebuild);
+  const promptText = willBuild
+    ? `Build RAMTECH OS from source and write it to ${drive.description} (${fmt(drive.size)})?\n\nEverything on that stick will be erased.`
+    : `Erase ${drive.description} (${fmt(drive.size)}) and write RAMTECH OS to it?\n\nEverything on that stick will be lost.`;
+
+  if (!confirm(promptText)) return;
 
   state.busy = true;
   updateWriteButton();
@@ -133,6 +228,17 @@ async function startWrite() {
       showBusy('Downloading RAMTECH OS…', 0, '');
       const got = await window.imager.downloadImage(state.release);
       src = got.path;
+    } else if (usingBuild()) {
+      if (!state.build || state.forceRebuild) {
+        showBusy('Building RAMTECH OS from source…', 0, 'Starting Docker build container…', true);
+        const built = await window.imager.startBuild({ clean: state.forceRebuild });
+        state.build = built;
+        state.forceRebuild = false;
+        src = built.path;
+        loadBuildStatus();
+      } else {
+        src = state.build.path;
+      }
     }
     showBusy('Preparing the drive…', 0, '');
     await window.imager.write({ src, dest: drive.id, verify: $('verify').checked });
@@ -142,8 +248,6 @@ async function startWrite() {
   }
 }
 
-// An error thrown in the main process arrives with Electron's IPC preamble
-// glued to the front of it; the sentence after that is the useful part.
 function cleanIpcError(err) {
   const msg = (err && err.message) || String(err);
   return msg.replace(/^Error invoking remote method '[^']*':\s*(Error:\s*)?/, '');
@@ -166,13 +270,24 @@ function onWriteProgress(p) {
 }
 
 // ── Chrome ───────────────────────────────────────────────────
-function showBusy(title, frac, detail) {
+function showBusy(title, frac, detail, showLog = false) {
   state.busy = true;
   $('busy').hidden = false;
   $('busy-title').textContent = title;
   $('busy-fill').style.width = `${Math.max(0, Math.min(1, frac || 0)) * 100}%`;
   $('busy-detail').textContent = detail || '';
+  if (!showLog && $('busy-log')) $('busy-log').hidden = true;
 }
-function finishBusy() { state.busy = false; $('busy').hidden = true; updateWriteButton(); }
+
+function finishBusy() {
+  state.busy = false;
+  $('busy').hidden = true;
+  if ($('busy-log')) {
+    $('busy-log').hidden = true;
+    $('busy-log').textContent = '';
+  }
+  updateWriteButton();
+}
+
 function showError(msg) { $('error-detail').textContent = msg; $('error').hidden = false; }
 function esc(s) { return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }

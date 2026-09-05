@@ -24,9 +24,13 @@ const progressPath = args.progress;
 
 function report(state) {
   try {
-    fs.writeFileSync(progressPath + '.tmp', JSON.stringify(state));
-    fs.renameSync(progressPath + '.tmp', progressPath);
-  } catch { /* the UI just shows the last good sample */ }
+    fs.writeFileSync(progressPath, JSON.stringify(state));
+  } catch {
+    try {
+      fs.writeFileSync(progressPath + '.tmp', JSON.stringify(state));
+      fs.renameSync(progressPath + '.tmp', progressPath);
+    } catch { /* the UI just shows the last good sample */ }
+  }
 }
 
 // Nothing may leave this process without an explanation in the progress file:
@@ -106,37 +110,34 @@ function unmount(dest) {
   // tested); there is nothing mounted to release.
   if (!isDevice(dest)) return;
   if (process.platform === 'win32') {
-    // `clean` wipes the partition table, which is also the only reliable way to
-    // make Windows drop every volume lock on the disk.
     const index = /(\d+)$/.exec(dest)[1];
-    // The online/readonly pass is repeated after the wipe, not just before it:
-    // a disk whose partition table has just been erased comes back as an
-    // uninitialised one, and Windows' SAN policy can respond by taking it
-    // offline — after which opening \\.\PHYSICALDRIVEn fails with EIO no matter
-    // how long anything waits. `rescan` drops the current selection, hence the
-    // second `select`. `noerr` throughout, because diskpart otherwise abandons
-    // the script on the "the disk is already online" it reports for a stick
-    // that was fine all along.
+
+    // Remove drive letters so Explorer and antivirus drop all locks on the volumes
+    try {
+      execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+        `Get-Partition -DiskNumber ${index} -ErrorAction SilentlyContinue | ` +
+        `Where-Object DriveLetter | ForEach-Object { ` +
+        `Remove-PartitionAccessPath -AccessPath ("{0}:\\" -f $_.DriveLetter) -ErrorAction SilentlyContinue }`],
+        { windowsHide: true, timeout: 8000, stdio: 'ignore' });
+    } catch {}
+
+    // On removable media (USB flash drives), `offline` and `convert` fail with
+    // "The operation is not supported on removable media". Use clean with readonly
+    // clear and online (with noerr) to reliably prepare both fixed and removable disks.
     const script = [
       `select disk ${index}`,
       'attributes disk clear readonly noerr',
       'online disk noerr',
       'clean',
-      'rescan',
-      `select disk ${index}`,
-      'online disk noerr',
       'attributes disk clear readonly noerr',
+      'online disk noerr',
       'exit',
     ].join('\n') + '\n';
     const tmp = path.join(os.tmpdir(), `ramtech-dp-${process.pid}.txt`);
     fs.writeFileSync(tmp, script);
     try {
-      // diskpart puts its real complaint on stdout and still exits 0, so the
-      // text is worth more than the exit status — keep it either way. Only the
-      // success line proves `clean` ran; a stick failing its I/O reports the
-      // reason here and would otherwise surface much later as a bare errno.
       const out = String(execFileSync(elevate.winTool('diskpart.exe'), ['/s', tmp],
-        { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }));
+        { encoding: 'utf8', windowsHide: true, timeout: 30000, stdio: ['ignore', 'pipe', 'pipe'] }));
       lastPrepareOutput = tidy(out);
       if (!/succeeded in cleaning the disk/i.test(out)) {
         throw new Error(`Could not prepare the USB stick for writing.\n${tidy(out)}`);
@@ -155,17 +156,21 @@ function unmount(dest) {
 }
 
 /** Put a disk Windows has parked offline — or flipped to read-only — back the
- *  way it was. Nothing here touches the contents: `clean` has already run by
- *  the time this is reached, and an offline disk cannot be opened at all. */
+ *  way it was. Fast and targeted: no global bus rescan. */
 function reonline(dest) {
+  if (process.platform !== 'win32') return;
   const index = /(\d+)$/.exec(dest)[1];
-  const script = [`select disk ${index}`, 'online disk noerr',
-    'attributes disk clear readonly noerr', 'rescan', 'exit'].join('\n') + '\n';
+  const script = [
+    `select disk ${index}`,
+    'attributes disk clear readonly noerr',
+    'online disk noerr',
+    'exit',
+  ].join('\n') + '\n';
   const tmp = path.join(os.tmpdir(), `ramtech-dp-online-${process.pid}.txt`);
   try {
     fs.writeFileSync(tmp, script);
     lastRepairOutput = tidy(String(execFileSync(elevate.winTool('diskpart.exe'), ['/s', tmp],
-      { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })));
+      { encoding: 'utf8', windowsHide: true, timeout: 15000, stdio: ['ignore', 'pipe', 'pipe'] })));
   } catch (err) {
     lastRepairOutput = tidy(String((err && err.stdout) || '') + String((err && err.stderr) || ''))
       || `putting the disk back online failed: ${(err && err.message) || err}`;
@@ -208,29 +213,19 @@ function sleep(ms) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0
 
 /** Open the target for writing, waiting out a device that is still settling. */
 function openTarget(target, isDev) {
-  // A minute of patience: re-enumerating a 64 GB stick after its partition
-  // table is wiped has been seen to take most of one, and the write that
-  // follows takes minutes anyway.
-  const deadline = Date.now() + (isDev ? 60000 : 0);
-  let repaired = false;
+  const deadline = Date.now() + (isDev ? 30000 : 0);
+  let attempt = 0;
   for (;;) {
-    try { return fs.openSync(target, 'r+'); }
-    catch (err) {
-      // Waiting does not fix every cause: a disk the SAN policy has parked
-      // offline, or one left read-only, refuses opens for as long as it stays
-      // that way and would otherwise just burn the whole deadline. Sample the
-      // state once, part-way through, and undo that if it is what happened.
-      if (isDev && process.platform === 'win32' && !repaired && Date.now() > deadline - 45000) {
-        repaired = true;
-        if (/offline=True|read-only=True/i.test(diskState(target))) reonline(target);
+    try {
+      return fs.openSync(target, 'r+');
+    } catch (err) {
+      attempt++;
+      // After clean, give Windows a moment to re-enumerate the device handle.
+      // If still failing after 3 attempts (~2 seconds), try re-onlining.
+      if (isDev && process.platform === 'win32' && attempt >= 3) {
+        reonline(target);
       }
       if (Date.now() >= deadline) {
-        // An errno alone cannot distinguish a stick that is broken from one
-        // Windows has merely parked offline, nor prove the prepare step did
-        // what it reported. Everything this process knows goes in the report,
-        // quoted, so the next failure needs no round of guessing — including
-        // what Win32 says when the same disk is opened outside Node, which is
-        // the only thing that names the real Windows error behind the errno.
         if (isDev) {
           const state = diskState(target);
           const probe = winProbe.probeOpen(target);
@@ -245,7 +240,7 @@ function openTarget(target, isDev) {
         throw err;
       }
       report({ phase: 'preparing', written: 0, total: 0, done: false });
-      sleep(1000);
+      sleep(attempt === 1 ? 500 : Math.min(1000, 250 * attempt));
     }
   }
 }
@@ -266,9 +261,22 @@ function diskState(dest) {
 
 function settle(dest) {
   try {
-    if (!isDevice(dest) || process.platform === 'win32') return;
-    if (process.platform === 'darwin') execFileSync('diskutil', ['eject', dest], { stdio: 'ignore' });
-    else execFileSync('blockdev', ['--rereadpt', dest], { stdio: 'ignore' });
+    if (!isDevice(dest)) return;
+    if (process.platform === 'win32') {
+      const index = /(\d+)$/.exec(dest)[1];
+      // Tell Windows storage stack to reload its cached partition table now that the raw write is complete
+      const script = [`select disk ${index}`, 'online disk noerr', 'rescan', 'exit'].join('\n') + '\n';
+      const tmp = path.join(os.tmpdir(), `ramtech-dp-settle-${process.pid}.txt`);
+      try {
+        fs.writeFileSync(tmp, script);
+        execFileSync(elevate.winTool('diskpart.exe'), ['/s', tmp],
+          { windowsHide: true, timeout: 15000, stdio: 'ignore' });
+      } finally { try { fs.unlinkSync(tmp); } catch {} }
+    } else if (process.platform === 'darwin') {
+      execFileSync('diskutil', ['eject', dest], { stdio: 'ignore' });
+    } else {
+      execFileSync('blockdev', ['--rereadpt', dest], { stdio: 'ignore' });
+    }
   } catch { /* cosmetic */ }
 }
 

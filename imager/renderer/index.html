@@ -35,10 +35,18 @@
       </span>
     </label>
     <label class="row choice">
+      <input type="radio" name="source" value="build">
+      <span class="body">
+        <strong>Build and image</strong>
+        <span id="build-detail" class="muted">Checking local build…</span>
+      </span>
+      <button id="rebuild" class="ghost" style="display: none;">Rebuild</button>
+    </label>
+    <label class="row choice">
       <input type="radio" name="source" value="file">
       <span class="body">
         <strong>A file on this computer</strong>
-        <span id="file-detail" class="muted">A <code>.img.gz</code> you built yourself</span>
+        <span id="file-detail" class="muted">A <code>.img.gz</code> you selected</span>
       </span>
       <button id="browse" class="ghost">Browse…</button>
     </label>
@@ -75,6 +83,7 @@
     <h2 id="busy-title">Working…</h2>
     <div class="bar"><div id="busy-fill"></div></div>
     <p id="busy-detail" class="muted"></p>
+    <div id="busy-log" class="log-preview" hidden></div>
     <p class="muted small">Leave the stick plugged in until this finishes.</p>
   </div>
 </div>

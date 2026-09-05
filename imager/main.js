@@ -5,6 +5,7 @@ const fs = require('fs');
 const drives = require('./lib/drives');
 const releases = require('./lib/release');
 const elevate = require('./lib/elevate');
+const builder = require('./lib/builder');
 
 let win = null;
 let writing = null;   // { progressPath, timer, child }
@@ -59,6 +60,23 @@ ipcMain.handle('image:download', async (_e, release) => {
   const cache = path.join(app.getPath('userData'), 'images');
   const out = await releases.download(release, cache, (p) => win && win.webContents.send('image:progress', p));
   return { ...out, name: release.name, version: release.version };
+});
+
+ipcMain.handle('build:status', async () => {
+  const local = builder.findLocalBuild();
+  const docker = await builder.checkDocker();
+  return { local, docker };
+});
+
+ipcMain.handle('build:start', async (_e, opts) => {
+  return await builder.startBuild(opts, (progress) => {
+    if (win) win.webContents.send('build:progress', progress);
+  });
+});
+
+ipcMain.handle('build:cancel', () => {
+  builder.cancelBuild();
+  return true;
 });
 
 // ── Step 2: the stick ────────────────────────────────────────

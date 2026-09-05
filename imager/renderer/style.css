@@ -113,3 +113,19 @@ kbd {
   background: var(--card-2); border: 1px solid var(--line); border-bottom-width: 2px;
   border-radius: 4px; padding: 1px 5px; font-size: 12px; font-family: inherit; color: var(--text);
 }
+
+.log-preview {
+  background: #080c10;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-family: Consolas, monospace;
+  font-size: 11px;
+  color: #92a4b5;
+  max-height: 120px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin: 10px 0;
+  -webkit-user-select: text; user-select: text;
+}
