@@ -14,8 +14,10 @@ import {
   isConfigured, getCreds, saveStore, loadStore, disconnect,
   createLoginUrl, exchangeCode, getProfile, getAccessToken, lanIp, getTls,
 } from './lib/auth.js';
+import WebSocket, { WebSocketServer } from 'ws';
+if (!globalThis.WebSocket) globalThis.WebSocket = WebSocket;
 import { startTunnel, stopTunnel, tunnelState } from './lib/tunnel.js';
-import { startRemote, stopRemote, getFrame, sendInput, remoteState } from './lib/remote.js';
+import { startRemote, stopRemote, getFrame, sendInput, remoteState, addRemoteSubscriber } from './lib/remote.js';
 import { getWebToken as prewarmWebToken } from './lib/webtoken.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -552,11 +554,18 @@ app.post('/api/remote/start', requireSetupAuth, async (_req, res) => {
   }
 });
 
-// Latest screen frame as a raw JPEG (tunnel-proof polling; no SSE buffering).
-app.get('/api/remote/frame', (_req, res) => {
-  const b64 = getFrame();
-  if (!b64) return res.status(204).end();
-  res.set('Cache-Control', 'no-store').type('jpeg').send(Buffer.from(b64, 'base64'));
+// Latest screen frame as raw PNG (with 304 caching).
+app.get('/api/remote/frame', (req, res) => {
+  const since = req.query.since || req.headers['if-none-match']?.replace(/"/g, '');
+  const frame = getFrame(since);
+  if (!frame) return res.status(204).end();
+  if (frame.notModified) return res.status(304).end();
+  res.set({
+    'Cache-Control': 'no-cache, no-store, must-revalidate',
+    'Content-Type': 'image/png',
+    'ETag': `"${frame.seq}"`,
+    'X-Frame-Seq': String(frame.seq),
+  }).send(frame.buffer);
 });
 
 app.post('/api/remote/input', async (req, res) => {
@@ -603,15 +612,38 @@ for (const sig of ['SIGINT', 'SIGTERM']) {
   process.on(sig, () => { try { rmSync(PID_FILE, { force: true }); } catch {}; process.exit(0); });
 }
 
-app.listen(PORT, async () => {
+const wss = new WebSocketServer({ noServer: true });
+wss.on('connection', (ws) => {
+  addRemoteSubscriber(ws);
+});
+
+function attachWsUpgrade(server) {
+  server.on('upgrade', (request, socket, head) => {
+    try {
+      const { pathname } = new URL(request.url, 'http://localhost');
+      if (pathname === '/ws/remote') {
+        wss.handleUpgrade(request, socket, head, (ws) => {
+          wss.emit('connection', ws, request);
+        });
+        return;
+      }
+    } catch {}
+    socket.destroy();
+  });
+}
+
+const httpServer = app.listen(PORT, async () => {
+  attachWsUpgrade(httpServer);
   console.log(`\n  🎧  spotify-tv-jam running`);
   console.log(`      TV view:     http://localhost:${PORT}   (kiosk / full-screen this)`);
 
   try {
     const tls = await getTls();
+    let httpsServer;
     await new Promise((resolve, reject) => {
-      https.createServer(tls, app).listen(HTTPS_PORT, resolve).on('error', reject);
+      httpsServer = https.createServer(tls, app).listen(HTTPS_PORT, resolve).on('error', reject);
     });
+    if (httpsServer) attachWsUpgrade(httpsServer);
     httpsUp = true;
     console.log(`      Setup page:  https://${lanIp()}:${HTTPS_PORT}/setup   (phone sign-in)`);
   } catch (e) {

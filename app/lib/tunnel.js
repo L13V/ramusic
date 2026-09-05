@@ -106,7 +106,7 @@ export async function startTunnel(port) {
   return new Promise((resolve) => {
     const proc = spawn(
       bin,
-      ['tunnel', '--url', `http://127.0.0.1:${port}`, '--no-autoupdate'],
+      ['tunnel', '--url', '--protocol http2', `http://127.0.0.1:${port}`, '--no-autoupdate'],
       { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true }
     );
     state.proc = proc;

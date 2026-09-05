@@ -33,6 +33,8 @@ ipcMain.handle('app:info', () => ({
 }));
 
 ipcMain.handle('app:relaunch-elevated', () => {
+  // Throws when the UAC prompt is dismissed — leave this window up in that case
+  // so there is something on screen to read the reason in.
   elevate.relaunchElevated();
   setTimeout(() => app.quit(), 500);
 });
@@ -69,6 +71,9 @@ ipcMain.handle('drives:list', async () => {
 ipcMain.handle('write:start', async (_e, { src, dest, verify }) => {
   if (writing) throw new Error('A write is already running.');
   if (!fs.existsSync(src)) throw new Error('The image file has gone missing.');
+  if (process.platform === 'win32' && !elevate.isElevated()) {
+    throw new Error('This window is not running as Administrator. Close the imager, right-click it and choose "Run as administrator", then try again.');
+  }
 
   const { progress, child } = elevate.startWriter({ src, dest, verify });
   let lastRaw = '';
@@ -92,10 +97,20 @@ ipcMain.handle('write:start', async (_e, { src, dest, verify }) => {
         let state = null;
         try { state = JSON.parse(fs.readFileSync(progress, 'utf8')); } catch {}
         if (state && state.done) return;
-        if (win) win.webContents.send('write:progress', {
-          phase: 'error', done: true,
-          error: 'The write could not be started — administrator rights were refused or unavailable.',
-        });
+        // Nothing in the progress file means the writer died before it could
+        // say why. Its stderr is then the only account there is; guessing at
+        // "administrator rights" here hid the real cause for every failure.
+        const stderr = (child.stderrText || '').trim();
+        const error = stderr
+          ? `The writer stopped unexpectedly (exit ${code}):\n${stderr.split('\n').slice(-8).join('\n')}`
+          : process.platform === 'win32'
+            // Windows elevates the whole app, so by here rights are not the
+            // suspect — antivirus and disk-protection tools are.
+            ? `The writer stopped unexpectedly (exit ${code}) without reporting a reason. Check that no antivirus or disk-protection tool is blocking raw disk writes.`
+            // Elsewhere the wrapper is the authorization prompt, and a refused
+            // prompt is exactly what a silent non-zero exit looks like.
+            : 'The write could not be started — administrator rights were refused or unavailable.';
+        if (win) win.webContents.send('write:progress', { phase: 'error', done: true, error });
         finish();
       }, 1500);
     }

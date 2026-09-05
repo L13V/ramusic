@@ -18,6 +18,7 @@ import { existsSync, mkdirSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import net from 'net';
+import WebSocket from 'ws';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROFILE_DIR = join(__dirname, '..', '.data', 'remote-login');
@@ -103,7 +104,7 @@ function cdp(wsUrl) {
     ws.onerror = (e) => reject(new Error('CDP error: ' + (e?.message || 'ws')));
     ws.onclose = () => { for (const { rej, to } of pending.values()) { clearTimeout(to); rej(new Error('CDP closed')); } pending.clear(); };
     ws.onmessage = (ev) => {
-      let m; try { m = JSON.parse(ev.data); } catch { return; }
+      let m; try { m = JSON.parse(typeof ev.data === 'string' ? ev.data : ev.data?.toString()); } catch { return; }
       if (m.id && pending.has(m.id)) {
         const { res, rej, to } = pending.get(m.id); clearTimeout(to); pending.delete(m.id);
         m.error ? rej(new Error(m.error.message)) : res(m.result);
@@ -113,17 +114,74 @@ function cdp(wsUrl) {
 }
 
 // ── single active session ──
-let session = null; // { child, conn, frame, meta, subs:Set, status, onCapture }
+let session = null; // { child, conn, browserConn, frame, frameBuffer, seq, frames, meta, subscribers: Set, status, message, onCapture, triggerCapture }
 
 export const remoteState = () => ({
   active: !!session,
   status: session?.status || 'idle',
   message: session?.message || '',
   frames: session?.frames || 0,
+  seq: session?.seq || 0,
 });
 
-/** Latest JPEG frame as a base64 string (or null). Polled by the phone. */
-export const getFrame = () => session?.frame || null;
+export function broadcast(msg) {
+  if (!session?.subscribers) return;
+  const payload = typeof msg === 'string' ? msg : JSON.stringify(msg);
+  for (const client of session.subscribers) {
+    if (client.readyState === 1 /* OPEN */) {
+      try { client.send(payload); } catch {}
+    }
+  }
+}
+
+export function setSessionStatus(status, message) {
+  if (!session) return;
+  session.status = status;
+  if (message !== undefined) session.message = message;
+  broadcast({ type: 'status', ...remoteState() });
+}
+
+export function addRemoteSubscriber(ws) {
+  if (!session) {
+    ws.send(JSON.stringify({ type: 'status', active: false, status: 'idle', message: '' }));
+    return;
+  }
+  session.subscribers.add(ws);
+  ws.send(JSON.stringify({ type: 'status', ...remoteState() }));
+  if (session.frame) {
+    ws.send(JSON.stringify({
+      type: 'frame',
+      seq: session.seq,
+      data: session.frame,
+      mimeType: 'image/png',
+    }));
+  }
+  ws.on('message', async (data) => {
+    try {
+      const raw = typeof data === 'string' ? data : data.toString();
+      const msg = JSON.parse(raw);
+      if (msg.type === 'input') {
+        await sendInput(msg.input || msg);
+      }
+    } catch {}
+  });
+  ws.on('close', () => {
+    session?.subscribers?.delete(ws);
+  });
+}
+
+/** Latest PNG frame as Buffer (or null). Supports ?since= for 304 caching. */
+export const getFrame = (sinceSeq) => {
+  if (!session?.frameBuffer) return null;
+  if (sinceSeq != null && Number(sinceSeq) >= session.seq) {
+    return { notModified: true, seq: session.seq };
+  }
+  return {
+    buffer: session.frameBuffer,
+    seq: session.seq,
+    mimeType: 'image/png',
+  };
+};
 
 export async function pageTarget(port, deadline) {
   while (Date.now() < deadline) {
@@ -200,7 +258,30 @@ export async function startRemote({ startUrl, onCapture, isOauthDone, wantSpDc =
   const hasDisplay = process.platform !== 'linux' || !!process.env.DISPLAY || !!process.env.WAYLAND_DISPLAY;
   let dbgPort = port;
   let child = launch(dbgPort, !hasDisplay);
-  session = { child, conn: null, frame: null, frames: 0, meta: { deviceWidth: VW, deviceHeight: VH }, status: 'starting', message: 'Opening Spotify sign-in on the PC…', onCapture };
+  let nextWake = null;
+  const triggerCapture = () => {
+    if (nextWake) {
+      const fn = nextWake;
+      nextWake = null;
+      fn();
+    }
+  };
+
+  session = {
+    child,
+    conn: null,
+    browserConn: null,
+    frame: null,
+    frameBuffer: null,
+    seq: 0,
+    frames: 0,
+    meta: { deviceWidth: VW, deviceHeight: VH },
+    status: 'starting',
+    message: 'Opening Spotify sign-in on the PC…',
+    onCapture,
+    subscribers: new Set(),
+    triggerCapture,
+  };
 
   let wsUrl = await pageTarget(dbgPort, Date.now() + 25_000);
   if (!wsUrl && hasDisplay && process.platform === 'linux') {
@@ -241,19 +322,37 @@ export async function startRemote({ startUrl, onCapture, isOauthDone, wantSpDc =
   };
   await refreshViewport();
 
-  session.status = 'live';
-  session.message = 'Sign in — you are driving the PC browser.';
+  setSessionStatus('live', 'Sign in — you are driving the PC browser.');
 
-  // Frame loop: poll screenshots of the actual viewport (reliable + no resize).
+  // Frame loop: capture PNG screenshots of the actual viewport.
+  // PNG is lossless and captures in ~30ms, rendering sharp text with zero JPEG ringing.
   (async () => {
     let tick = 0;
     while (session && session.conn === conn) {
       try {
-        const r = await conn.send('Page.captureScreenshot', { format: 'jpeg', quality: 55 });
-        if (r?.data && session) { session.frame = r.data; session.frames++; }
+        const r = await conn.send('Page.captureScreenshot', { format: 'png' });
+        if (r?.data && session && session.conn === conn) {
+          if (r.data !== session.frame) {
+            session.frame = r.data;
+            session.frameBuffer = Buffer.from(r.data, 'base64');
+            session.seq = (session.seq || 0) + 1;
+            session.frames++;
+            broadcast({
+              type: 'frame',
+              seq: session.seq,
+              data: session.frame,
+              mimeType: 'image/png',
+            });
+          }
+        }
       } catch { /* transient; keep going until conn swapped */ }
-      if ((++tick % 12) === 0) await refreshViewport(); // ~every 3s, in case it reflows
-      await sleep(250);
+      if ((++tick % 15) === 0) await refreshViewport(); // ~every 3s, in case it reflows
+
+      // Sleep up to 150ms, or wake immediately on user interaction
+      await new Promise((resolve) => {
+        const to = setTimeout(() => { nextWake = null; resolve(); }, 150);
+        nextWake = () => { clearTimeout(to); resolve(); };
+      });
     }
   })();
 
@@ -281,16 +380,15 @@ export async function startRemote({ startUrl, onCapture, isOauthDone, wantSpDc =
       const timedOut = Date.now() > hardDeadline;
 
       if ((oauthOk && spOk) || timedOut) {
-        session.status = 'captured';
-        session.message = !oauthOk ? 'Timed out before sign-in finished.'
+        setSessionStatus('captured', !oauthOk ? 'Timed out before sign-in finished.'
           : (wantSpDc && !gotSpDc) ? 'Signed in (Jam cookie not found — optional).'
-          : 'Signed in — all set.';
+          : 'Signed in — all set.');
         await sleep(600);
         await stopRemote();
         return;
       }
       // Nudge the message once the account is connected but we're still waiting.
-      if (oauthOk && wantSpDc && !gotSpDc) session.message = 'Signed in — enabling Jam…';
+      if (oauthOk && wantSpDc && !gotSpDc) setSessionStatus('live', 'Signed in — enabling Jam…');
       await sleep(1500);
     }
   })();
@@ -311,9 +409,9 @@ export async function sendInput(ev) {
       // Move first (hover + a trusted motion), then a deliberate press/release —
       // more reliable than a bare press, and reads as a real click.
       await conn.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, buttons: 0 });
-      await sleep(20);
+      await sleep(15);
       await conn.send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', buttons: 1, clickCount: 1 });
-      await sleep(35);
+      await sleep(25);
       await conn.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', buttons: 0, clickCount: 1 });
     } else if (ev.type === 'wheel') {
       const x = (ev.nx ?? 0.5) * dw, y = (ev.ny ?? 0.5) * dh;
@@ -331,12 +429,23 @@ export async function sendInput(ev) {
       }
     }
   } catch {}
+  // Trigger immediate frame capture so the UI responds instantaneously to user input
+  session?.triggerCapture?.();
 }
 
 export async function stopRemote() {
   const s = session;
   session = null;
   if (!s) return;
+  try {
+    for (const client of (s.subscribers || [])) {
+      try {
+        client.send(JSON.stringify({ type: 'status', active: false, status: 'closed', message: 'Session closed' }));
+        client.close();
+      } catch {}
+    }
+    s.subscribers?.clear();
+  } catch {}
   try { s.conn?.close(); } catch {}
   try { s.browserConn?.close(); } catch {}
   try { if (s.child?.pid) process.kill(s.child.pid); } catch {}

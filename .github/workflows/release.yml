@@ -1,17 +1,55 @@
 name: Release
 
-# Tag a version (v1.2.3) → builds the OTA tarball and attaches it to a GitHub
-# Release. Devices (and the image builder) download ramtech-app-<tag>.tar.gz.
+# Every push to main becomes a release: the version is the next patch after the
+# highest v-tag, and the tag itself is created by the release below. Pushing a
+# v1.2.3 tag by hand still works and takes that version verbatim.
+#
+# Devices (and the image builder) download ramtech-app-<tag>.tar.gz; the imager's
+# "Latest RAMTECH OS" option and the OTA check both read /releases/latest, which
+# ignores drafts — so the release stays a draft until the OS image is attached
+# and nothing ever sees a half-built version.
 on:
   push:
+    branches: [main]
     tags: ['v*.*.*']
+  workflow_dispatch:
 
 permissions:
   contents: write
 
+# Two pushes in quick succession would otherwise pick the same next version.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
-  release:
+  version:
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.pick.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0        # the tag list is the version counter
+
+      - name: Work out the version
+        id: pick
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            TAG="$GITHUB_REF_NAME"
+          else
+            LAST="$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' | sort -V | tail -1)"
+            IFS=. read -r MAJOR MINOR PATCH <<<"${LAST:-v0.0.0}"
+            TAG="${MAJOR}.${MINOR}.$((PATCH + 1))"
+          fi
+          echo "Releasing $TAG"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+  release:
+    needs: version
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ needs.version.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
 
@@ -32,29 +70,48 @@ jobs:
 
       - name: Build tarball
         run: |
-          TAG="${GITHUB_REF_NAME}"
           STAGE="$(mktemp -d)"
           cp -r app admin "$STAGE/"
           mkdir -p "$STAGE/bin"
           cp os/overlay/bin/*.sh "$STAGE/bin/"
           chmod +x "$STAGE/bin/"*.sh "$STAGE/app/deploy/"*.sh
           printf '%s\n' "$TAG" > "$STAGE/VERSION"
+          # Stamp the shipped manifests so anything that reads package.json
+          # agrees with VERSION. Only the tarball is stamped — writing the bump
+          # back to main would trigger this workflow again on its own commit.
+          for pkg in "$STAGE/app/package.json" "$STAGE/admin/package.json"; do
+            node -e 'const f=process.argv[1],p=require(f);p.version=process.argv[2].replace(/^v/,"");require("fs").writeFileSync(f,JSON.stringify(p,null,2)+"\n")' "$pkg" "$TAG"
+          done
           # Never ship local state or secrets.
           rm -rf "$STAGE/app/.data" "$STAGE/app/.env"
           tar -czf "ramtech-app-$TAG.tar.gz" -C "$STAGE" app admin bin VERSION
           tar -tzf "ramtech-app-$TAG.tar.gz" | head -5
 
-      - name: Create GitHub Release
+      - name: Create the draft release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.TAG }}
+          draft: true
           files: ramtech-app-*.tar.gz
           generate_release_notes: true
 
+      # The image job seeds this into the overlay instead of downloading it:
+      # /releases/latest cannot see the draft release above, so a download there
+      # would bake the *previous* app version into a new image.
+      - name: Hand the tarball to the image build
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-tarball
+          path: ramtech-app-*.tar.gz
+
   # The OS image bakes in the app tarball the job above just published, so it
-  # has to run second. The imager's "Latest RAMTECH OS" option reads this asset.
+  # has to run second. Publishing the draft is the last step, so a failed image
+  # build leaves nothing for the OTA check or the imager to pick up.
   os-image:
-    needs: release
+    needs: [version, release]
     runs-on: ubuntu-latest
+    env:
+      TAG: ${{ needs.version.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
 
@@ -64,9 +121,15 @@ jobs:
                       /usr/local/share/boost "$AGENT_TOOLSDIRECTORY"
           df -h /
 
+      - name: Seed the app payload just built
+        uses: actions/download-artifact@v4
+        with:
+          name: app-tarball
+          path: os/overlay/seed
+
       - name: Build the live image
         env:
-          RAMTECH_VERSION: ${{ github.ref_name }}
+          RAMTECH_VERSION: ${{ needs.version.outputs.tag }}
         run: |
           docker build -t ramtech-os-builder os
           docker run --rm --privileged \
@@ -74,9 +137,11 @@ jobs:
             ramtech-os-builder bash /src/os/build-in-container.sh
           ls -lh os/out
 
-      - name: Attach the image to the release
+      - name: Attach the image and publish the release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.TAG }}
+          draft: false
           files: |
             os/out/ramtech-os-*.img.gz
             os/out/ramtech-os-*.img.gz.sha256

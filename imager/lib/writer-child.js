@@ -10,7 +10,11 @@
 const fs = require('fs');
 const zlib = require('zlib');
 const crypto = require('crypto');
+const path = require('path');
+const os = require('os');
 const { execFileSync } = require('child_process');
+const elevate = require('./elevate');
+const winProbe = require('./win-probe');
 
 const SECTOR = 512;
 const CHUNK = 4 * 1024 * 1024;
@@ -23,6 +27,55 @@ function report(state) {
     fs.writeFileSync(progressPath + '.tmp', JSON.stringify(state));
     fs.renameSync(progressPath + '.tmp', progressPath);
   } catch { /* the UI just shows the last good sample */ }
+}
+
+// Nothing may leave this process without an explanation in the progress file:
+// the parent can only see the exit status, and "it exited non-zero" used to be
+// reported to the user as refused Administrator rights whatever went wrong.
+function fail(err) {
+  report({ phase: 'error', done: true, error: explain(err) });
+  process.exit(1);
+}
+process.on('uncaughtException', fail);
+process.on('unhandledRejection', fail);
+
+/**
+ * What to tell the person at the keyboard: the advice for this errno, followed
+ * by whatever the failing step attached as `err.detail`. Advice replaced the
+ * detail here until it cost a report the disk state that had been collected
+ * for it — the two are additive, never alternatives.
+ */
+function explain(err) {
+  const detail = (err && err.detail) || '';
+  return [advice(err), detail].filter(Boolean).join('\n\n');
+}
+
+function advice(err) {
+  const msg = (err && err.message) || String(err);
+  switch (err && err.code) {
+    case 'EPERM':
+    case 'EACCES':
+      return process.platform === 'win32'
+        ? `Windows refused access to the drive (${err.code}). Close anything that might be holding it — Explorer windows, antivirus, backup or sync tools — then unplug the stick, plug it back in and try again.`
+        : `The system refused access to the device (${err.code}).`;
+    case 'EBUSY':
+      return 'The drive is still in use — the system has not let go of it yet. Unplug the stick, plug it back in and try again.';
+    case 'ENOENT':
+      return `Not found: ${msg}. The stick may have been unplugged.`;
+    case 'ENOSPC':
+      return 'The USB stick is too small for this image. Use an 8 GB or larger stick.';
+    case 'EIO':
+      // Not necessarily a dead stick. Windows answers with the same I/O device
+      // error for a disk it has parked offline, and by the time this can happen
+      // diskpart has just written to the stick successfully — so the media
+      // itself was reachable moments earlier. The Win32 codes in the detail
+      // below are what separates the two; the advice covers both.
+      return 'Windows reported an I/O device error on this stick, so the write could not start. Unplug it and try a different port — one on the PC itself rather than a hub or a front-panel socket — then try again. If it fails the same way in a second port, the stick is worn out: use another one.';
+    case 'EINVAL':
+      return 'Windows rejected the handle on this disk, which is neither a permissions problem nor a worn-out stick. Run diagnose.bat (next to imager.bat) as Administrator — it reports the underlying Windows error code, which says which it is.';
+    default:
+      return msg;
+  }
 }
 
 function parseArgs(argv) {
@@ -43,6 +96,11 @@ function isDevice(dest) {
     : dest.startsWith('/dev/');
 }
 
+// Kept for the failure report: whether the prepare step really did what it said
+// is the first thing anyone needs to know when the open afterwards fails.
+let lastPrepareOutput = '';
+let lastRepairOutput = '';
+
 function unmount(dest) {
   // A plain file target is a valid destination (it is how the write path is
   // tested); there is nothing mounted to release.
@@ -51,17 +109,159 @@ function unmount(dest) {
     // `clean` wipes the partition table, which is also the only reliable way to
     // make Windows drop every volume lock on the disk.
     const index = /(\d+)$/.exec(dest)[1];
-    const script = `select disk ${index}\nclean\nrescan\nexit\n`;
-    const tmp = require('path').join(require('os').tmpdir(), `ramtech-dp-${process.pid}.txt`);
+    // The online/readonly pass is repeated after the wipe, not just before it:
+    // a disk whose partition table has just been erased comes back as an
+    // uninitialised one, and Windows' SAN policy can respond by taking it
+    // offline — after which opening \\.\PHYSICALDRIVEn fails with EIO no matter
+    // how long anything waits. `rescan` drops the current selection, hence the
+    // second `select`. `noerr` throughout, because diskpart otherwise abandons
+    // the script on the "the disk is already online" it reports for a stick
+    // that was fine all along.
+    const script = [
+      `select disk ${index}`,
+      'attributes disk clear readonly noerr',
+      'online disk noerr',
+      'clean',
+      'rescan',
+      `select disk ${index}`,
+      'online disk noerr',
+      'attributes disk clear readonly noerr',
+      'exit',
+    ].join('\n') + '\n';
+    const tmp = path.join(os.tmpdir(), `ramtech-dp-${process.pid}.txt`);
     fs.writeFileSync(tmp, script);
-    try { execFileSync('diskpart', ['/s', tmp], { stdio: 'ignore' }); }
-    finally { try { fs.unlinkSync(tmp); } catch {} }
+    try {
+      // diskpart puts its real complaint on stdout and still exits 0, so the
+      // text is worth more than the exit status — keep it either way. Only the
+      // success line proves `clean` ran; a stick failing its I/O reports the
+      // reason here and would otherwise surface much later as a bare errno.
+      const out = String(execFileSync(elevate.winTool('diskpart.exe'), ['/s', tmp],
+        { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }));
+      lastPrepareOutput = tidy(out);
+      if (!/succeeded in cleaning the disk/i.test(out)) {
+        throw new Error(`Could not prepare the USB stick for writing.\n${tidy(out)}`);
+      }
+    } catch (err) {
+      if (err.stdout === undefined && err.stderr === undefined) throw err;
+      throw new Error(`Could not prepare the USB stick for writing.\n${
+        tidy(String(err.stdout || '') + String(err.stderr || '')) || explain(err)}`);
+    } finally { try { fs.unlinkSync(tmp); } catch {} }
   } else if (process.platform === 'darwin') {
     execFileSync('diskutil', ['unmountDisk', 'force', dest], { stdio: 'ignore' });
   } else {
     // Best effort: a stick with nothing mounted makes umount fail, harmlessly.
     try { execFileSync('sh', ['-c', `umount ${dest}?* 2>/dev/null || true`], { stdio: 'ignore' }); } catch {}
   }
+}
+
+/** Put a disk Windows has parked offline — or flipped to read-only — back the
+ *  way it was. Nothing here touches the contents: `clean` has already run by
+ *  the time this is reached, and an offline disk cannot be opened at all. */
+function reonline(dest) {
+  const index = /(\d+)$/.exec(dest)[1];
+  const script = [`select disk ${index}`, 'online disk noerr',
+    'attributes disk clear readonly noerr', 'rescan', 'exit'].join('\n') + '\n';
+  const tmp = path.join(os.tmpdir(), `ramtech-dp-online-${process.pid}.txt`);
+  try {
+    fs.writeFileSync(tmp, script);
+    lastRepairOutput = tidy(String(execFileSync(elevate.winTool('diskpart.exe'), ['/s', tmp],
+      { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })));
+  } catch (err) {
+    lastRepairOutput = tidy(String((err && err.stdout) || '') + String((err && err.stderr) || ''))
+      || `putting the disk back online failed: ${(err && err.message) || err}`;
+  } finally { try { fs.unlinkSync(tmp); } catch {} }
+}
+
+/** diskpart leads with three lines of version banner before anything useful.
+ *  Of what is left, the verdicts are worth more than the tail: `clean`'s
+ *  success line sits four lines above the end of the script, and it is the one
+ *  that says whether the stick took a write at all. */
+function tidy(text) {
+  const lines = String(text).split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l && !/^(Microsoft DiskPart|Copyright|On computer:)/i.test(l));
+  const keep = new Set();
+  lines.forEach((l, i) => {
+    if (!/succe|fail|error|cannot|denied|refus|no media/i.test(l)) return;
+    keep.add(i);
+    // "Virtual Disk Service error:" carries its actual complaint on the line
+    // after it, which on its own matches nothing.
+    if (/:$/.test(l) && lines[i + 1]) keep.add(i + 1);
+  });
+  for (let i = Math.max(0, lines.length - 4); i < lines.length; i++) keep.add(i);
+  return lines.filter((_, i) => keep.has(i)).slice(-8).join('\n');
+}
+
+function sleep(ms) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
+
+// Wiping the partition table makes Windows tear the disk down and enumerate it
+// again, and for the seconds that takes the device answers with whatever state
+// it happens to be in mid-reset: still locked (EBUSY/EACCES), briefly absent
+// (ENOENT), faulting (EIO), or refusing the request outright (EINVAL). Which
+// one surfaces depends on how far through the teardown the open lands, so an
+// allow-list of "the transient ones" is the wrong shape — it was missing EIO,
+// then EINVAL, each looking like a hard failure only because it was not waited
+// out. The disk was opened successfully moments earlier, before diskpart ran;
+// nothing here says it cannot be opened, only that it cannot be opened yet.
+// Every error is therefore worth retrying until the deadline, after which the
+// real one is reported unchanged.
+
+/** Open the target for writing, waiting out a device that is still settling. */
+function openTarget(target, isDev) {
+  // A minute of patience: re-enumerating a 64 GB stick after its partition
+  // table is wiped has been seen to take most of one, and the write that
+  // follows takes minutes anyway.
+  const deadline = Date.now() + (isDev ? 60000 : 0);
+  let repaired = false;
+  for (;;) {
+    try { return fs.openSync(target, 'r+'); }
+    catch (err) {
+      // Waiting does not fix every cause: a disk the SAN policy has parked
+      // offline, or one left read-only, refuses opens for as long as it stays
+      // that way and would otherwise just burn the whole deadline. Sample the
+      // state once, part-way through, and undo that if it is what happened.
+      if (isDev && process.platform === 'win32' && !repaired && Date.now() > deadline - 45000) {
+        repaired = true;
+        if (/offline=True|read-only=True/i.test(diskState(target))) reonline(target);
+      }
+      if (Date.now() >= deadline) {
+        // An errno alone cannot distinguish a stick that is broken from one
+        // Windows has merely parked offline, nor prove the prepare step did
+        // what it reported. Everything this process knows goes in the report,
+        // quoted, so the next failure needs no round of guessing — including
+        // what Win32 says when the same disk is opened outside Node, which is
+        // the only thing that names the real Windows error behind the errno.
+        if (isDev) {
+          const state = diskState(target);
+          const probe = winProbe.probeOpen(target);
+          err.detail = [
+            `Details: ${err.code} opening ${JSON.stringify(target)}`,
+            state && `Windows reports this disk as: ${state}`,
+            lastPrepareOutput && `diskpart said:\n${lastPrepareOutput}`,
+            lastRepairOutput && `putting it back online said:\n${lastRepairOutput}`,
+            probe && `opening it directly, outside Node:\n${probe}`,
+          ].filter(Boolean).join('\n');
+        }
+        throw err;
+      }
+      report({ phase: 'preparing', written: 0, total: 0, done: false });
+      sleep(1000);
+    }
+  }
+}
+
+/** How Windows currently sees the disk — offline and read-only are the two
+ *  states that make a healthy stick unopenable. */
+function diskState(dest) {
+  if (process.platform !== 'win32') return '';
+  try {
+    const index = /(\d+)$/.exec(dest)[1];
+    const out = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+      `Get-Disk -Number ${index} | ForEach-Object { '{0}; offline={1}; read-only={2}; {3}; health {4}; partition style {5}' -f ` +
+      '$_.FriendlyName,$_.IsOffline,$_.IsReadOnly,$_.OperationalStatus,$_.HealthStatus,$_.PartitionStyle }'],
+      { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+    return String(out).trim();
+  } catch { return ''; }
 }
 
 function settle(dest) {
@@ -74,6 +274,16 @@ function settle(dest) {
 
 async function main() {
   const { src, dest, verify } = args;
+
+  // A device write that starts unprivileged only fails once it reaches the
+  // device, with a bare errno. Saying so up front is the difference between a
+  // fix and a guess.
+  if (isDevice(dest) && !elevate.isElevated()) {
+    throw new Error(process.platform === 'win32'
+      ? 'This copy of the imager is not running as Administrator, so Windows will not allow a raw disk write. Close it, right-click RAMTECH Imager (or imager.bat) and choose "Run as administrator".'
+      : 'The writer is not running as root, so the device cannot be opened.');
+  }
+
   const compressedTotal = fs.statSync(src).size;
 
   report({ phase: 'preparing', written: 0, total: compressedTotal, done: false });
@@ -84,7 +294,7 @@ async function main() {
     ? dest.replace('/dev/disk', '/dev/rdisk')
     : dest;
   if (!isDevice(dest) && !fs.existsSync(target)) fs.closeSync(fs.openSync(target, 'w'));
-  const fd = fs.openSync(target, 'r+');
+  const fd = openTarget(target, isDevice(dest));
 
   const hash = crypto.createHash('sha256');
   let offset = 0;              // bytes written to the device (may include a padded tail)
@@ -175,9 +385,8 @@ async function main() {
     report({ phase: 'done', written: compressedTotal, total: compressedTotal, done: true, bytesOnDevice: imageBytes });
   } catch (err) {
     try { fs.closeSync(fd); } catch {}
-    report({ phase: 'error', done: true, error: err.message || String(err) });
-    process.exitCode = 1;
+    throw err;
   }
 }
 
-main();
+main().catch(fail);

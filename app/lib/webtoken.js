@@ -9,6 +9,7 @@
 // shortly before it expires; refresh spins the browser up again (~hourly).
 
 import { spawn } from 'child_process';
+import WebSocket from 'ws';
 import { findBrowser, freePort, pageTarget, REMOTE_PROFILE_DIR } from './remote.js';
 import { getCreds, saveStore } from './auth.js';
 
@@ -38,7 +39,7 @@ function cdp(wsUrl) {
     ws.onerror = (e) => reject(new Error('CDP error: ' + (e?.message || 'ws')));
     ws.onclose = () => { for (const { rej, to } of pending.values()) { clearTimeout(to); rej(new Error('CDP closed')); } pending.clear(); };
     ws.onmessage = (ev) => {
-      let m; try { m = JSON.parse(ev.data); } catch { return; }
+      let m; try { m = JSON.parse(typeof ev.data === 'string' ? ev.data : ev.data?.toString()); } catch { return; }
       if (m.id && pending.has(m.id)) {
         const { res, rej, to } = pending.get(m.id); clearTimeout(to); pending.delete(m.id);
         m.error ? rej(new Error(m.error.message)) : res(m.result);

@@ -18,7 +18,14 @@ const fmt = (b) => {
 
   if (info.platform === 'win32' && !info.elevated) {
     $('needs-admin').hidden = false;
-    $('relaunch').onclick = () => window.imager.relaunchElevated();
+    $('relaunch').onclick = async () => {
+      $('relaunch-error').hidden = true;
+      try { await window.imager.relaunchElevated(); }
+      catch (err) {
+        $('relaunch-error').textContent = cleanIpcError(err);
+        $('relaunch-error').hidden = false;
+      }
+    };
     return;
   }
   $('app').hidden = false;
@@ -131,8 +138,15 @@ async function startWrite() {
     await window.imager.write({ src, dest: drive.id, verify: $('verify').checked });
   } catch (err) {
     finishBusy();
-    showError(err.message || String(err));
+    showError(cleanIpcError(err));
   }
+}
+
+// An error thrown in the main process arrives with Electron's IPC preamble
+// glued to the front of it; the sentence after that is the useful part.
+function cleanIpcError(err) {
+  const msg = (err && err.message) || String(err);
+  return msg.replace(/^Error invoking remote method '[^']*':\s*(Error:\s*)?/, '');
 }
 
 function onWriteProgress(p) {

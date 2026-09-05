@@ -9,6 +9,7 @@
 // degrades gracefully: if it fails, now-playing/queue still work and the QR
 // falls back to JAM_URL_FALLBACK.
 
+import WebSocket from 'ws';
 import { getAccessToken, getCreds } from './auth.js';
 import { getWebToken as mintWebToken } from './webtoken.js';
 
@@ -140,7 +141,8 @@ function dealerConnId(tok) {
     const to = setTimeout(() => { try { ws.close(); } catch {} resolve(null); }, 10_000);
     ws.onmessage = (ev) => {
       try {
-        const id = JSON.parse(ev.data)?.headers?.['Spotify-Connection-Id'];
+        const raw = typeof ev.data === 'string' ? ev.data : ev.data?.toString();
+        const id = JSON.parse(raw)?.headers?.['Spotify-Connection-Id'];
         if (id) {
           clearTimeout(to);
           dWs = ws; dConnId = id; dTok = tok;

@@ -90,6 +90,18 @@ button:hover:not(:disabled) { filter: brightness(1.12); }
 .overlay h2 { font-size: 18px; margin-bottom: 14px; }
 .ok { color: var(--ok); }
 .bad { color: var(--bad); }
+/* Failure text quotes the tool that failed, so its line breaks have to survive.
+   It also quotes device paths and Windows error strings, which are what anyone
+   reporting the problem has to send on — hence selectable, against the
+   app-wide user-select: none, and scrollable rather than off the bottom of the
+   window when several tools have had something to say. */
+.detail {
+  white-space: pre-line; text-align: left; overflow-wrap: anywhere;
+  -webkit-user-select: text; user-select: text;
+}
+.overlay { overflow-y: auto; }
+#error-detail { max-height: 52vh; overflow-y: auto; }
+.gate p.bad { color: var(--bad); }   /* beats `.gate p`, which is muted */
 
 .bar { height: 8px; background: var(--card-2); border-radius: 99px; overflow: hidden; margin: 4px 0 10px; }
 .bar > div { height: 100%; width: 0; background: var(--accent); transition: width .2s linear; }

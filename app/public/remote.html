@@ -12,7 +12,7 @@ h1{font-size:18px;font-weight:800;display:flex;align-items:center;gap:9px;margin
 h1 .dot{width:9px;height:9px;border-radius:50%;background:var(--accent);box-shadow:0 0 12px var(--accent)}
 .sub{color:var(--dim);font-size:13px;line-height:1.45;margin-bottom:12px}
 .screenwrap{position:relative;background:#000;border:1px solid var(--brd);border-radius:14px;overflow:hidden;aspect-ratio:420/760;display:grid;place-items:center}
-#screen{width:100%;height:100%;object-fit:contain;display:none;touch-action:none;-webkit-user-select:none;user-select:none}
+#screen{width:100%;height:100%;object-fit:contain;display:none;touch-action:none;-webkit-user-select:none;user-select:none;image-rendering:-webkit-optimize-contrast;image-rendering:crisp-edges}
 #placeholder{color:var(--dim);font-size:14px;text-align:center;padding:20px;line-height:1.5}
 .spinner{width:26px;height:26px;border:3px solid rgba(255,255,255,.2);border-top-color:var(--accent);border-radius:50%;animation:spin 1s linear infinite;margin:0 auto 12px}
 @keyframes spin{to{transform:rotate(360deg)}}
@@ -59,6 +59,8 @@ h1 .dot{width:9px;height:9px;border-radius:50%;background:var(--accent);box-shad
 const $ = (id) => document.getElementById(id);
 const screen = $('screen'), ph = $('placeholder');
 let started = false, doneFlag = false;
+let ws = null;
+let lastSeq = 0;
 
 const setupToken = sessionStorage.getItem('setupToken') || '';
 async function api(path, body) {
@@ -68,35 +70,110 @@ async function api(path, body) {
   return r.json().catch(() => ({}));
 }
 
+function sendInputEvent(input) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'input', input }));
+  } else {
+    api('/api/remote/input', input);
+  }
+}
+
+function handleStatus(s) {
+  if (s.status === 'captured') {
+    doneFlag = true;
+    $('live').style.display = 'none';
+    $('done').style.display = 'block';
+  } else if (!s.active && started) {
+    $('err').style.display = 'block';
+    $('err').textContent = s.message || 'The sign-in window closed before finishing. Reload to try again, or paste sp_dc manually on setup.';
+  } else if (s.message && ph.style.display !== 'none') {
+    ph.innerHTML = `<div class="spinner"></div>${escapeHtml(s.message)}`;
+  }
+}
+
+function escapeHtml(s) {
+  return String(s || '').replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+}
+
+function connectWebSocket() {
+  try {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const socket = new WebSocket(`${proto}//${location.host}/ws/remote`);
+    ws = socket;
+    socket.onopen = () => {
+      console.log('Remote control WebSocket connected');
+    };
+    socket.onmessage = (ev) => {
+      try {
+        const msg = JSON.parse(ev.data);
+        if (msg.type === 'frame' && msg.data) {
+          lastSeq = msg.seq || (lastSeq + 1);
+          screen.src = 'data:image/png;base64,' + msg.data;
+          if (screen.style.display !== 'block') {
+            screen.style.display = 'block';
+            ph.style.display = 'none';
+          }
+        } else if (msg.type === 'status') {
+          handleStatus(msg);
+        }
+      } catch {}
+    };
+    socket.onerror = () => {
+      startHttpFallback();
+    };
+    socket.onclose = () => {
+      ws = null;
+      if (!doneFlag && started) {
+        startHttpFallback();
+      }
+    };
+  } catch {
+    startHttpFallback();
+  }
+}
+
+let fallbackStarted = false;
+function startHttpFallback() {
+  if (fallbackStarted || doneFlag) return;
+  fallbackStarted = true;
+  pumpFramesHttp();
+  pollHttp();
+}
+
 async function start() {
   try {
+    connectWebSocket();
     const r = await api('/api/remote/start');
     if (!r.ok) throw new Error(r.error || 'could not start');
     started = true;
-    pumpFrames();
-    poll();
   } catch (e) {
     $('err').style.display = 'block';
     $('err').textContent = 'Could not open the sign-in window on the PC: ' + e.message + ' — you can still paste sp_dc manually on the setup page.';
   }
 }
 
-// Poll the latest frame as a JPEG blob (tunnel-safe, no SSE).
-async function pumpFrames() {
+// HTTP polling fallback for frames if WebSocket is not available
+async function pumpFramesHttp() {
   let lastUrl = null;
   while (!doneFlag) {
     try {
-      const r = await fetch('/api/remote/frame', { cache: 'no-store' });
+      const url = `/api/remote/frame?since=${lastSeq}`;
+      const r = await fetch(url, { cache: 'no-store' });
       if (r.status === 200) {
+        const seq = r.headers.get('X-Frame-Seq');
+        if (seq) lastSeq = Number(seq);
         const blob = await r.blob();
-        const url = URL.createObjectURL(blob);
-        screen.src = url;
-        if (screen.style.display !== 'block') { screen.style.display = 'block'; ph.style.display = 'none'; }
+        const objUrl = URL.createObjectURL(blob);
+        screen.src = objUrl;
+        if (screen.style.display !== 'block') {
+          screen.style.display = 'block';
+          ph.style.display = 'none';
+        }
         if (lastUrl) URL.revokeObjectURL(lastUrl);
-        lastUrl = url;
+        lastUrl = objUrl;
       }
     } catch {}
-    await new Promise((r) => setTimeout(r, 300));
+    await new Promise((r) => setTimeout(r, 150));
   }
   if (lastUrl) URL.revokeObjectURL(lastUrl);
 }
@@ -105,8 +182,7 @@ async function pumpFrames() {
 function norm(e) {
   const rect = screen.getBoundingClientRect();
   const pt = e.touches ? e.touches[0] : e;
-  // account for object-fit:contain letterboxing
-  const iw = screen.naturalWidth, ih = screen.naturalHeight;
+  const iw = screen.naturalWidth || 420, ih = screen.naturalHeight || 760;
   const scale = Math.min(rect.width / iw, rect.height / ih);
   const dw = iw * scale, dh = ih * scale;
   const ox = rect.left + (rect.width - dw) / 2, oy = rect.top + (rect.height - dh) / 2;
@@ -117,7 +193,7 @@ screen.addEventListener('click', (e) => {
   if (!started) return;
   const { nx, ny } = norm(e);
   if (nx < 0 || nx > 1 || ny < 0 || ny > 1) return;
-  api('/api/remote/input', { type: 'click', nx, ny });
+  sendInputEvent({ type: 'click', nx, ny });
   $('type').focus();
 });
 
@@ -127,7 +203,7 @@ screen.addEventListener('touchstart', (e) => { sy = e.touches[0].clientY; }, { p
 screen.addEventListener('touchmove', (e) => {
   if (sy == null) return;
   const y = e.touches[0].clientY, dy = sy - y;
-  if (Math.abs(dy) > 6) { api('/api/remote/input', { type: 'wheel', dy: dy * 2 }); sy = y; }
+  if (Math.abs(dy) > 6) { sendInputEvent({ type: 'wheel', dy: dy * 2 }); sy = y; }
 }, { passive: true });
 screen.addEventListener('touchend', () => { sy = null; });
 
@@ -136,24 +212,21 @@ let last = '';
 const box = $('type');
 box.addEventListener('input', () => {
   const v = box.value;
-  if (v.length > last.length) api('/api/remote/input', { type: 'text', text: v.slice(last.length) });
-  else if (v.length < last.length) api('/api/remote/input', { type: 'key', key: 'Backspace', n: last.length - v.length });
+  if (v.length > last.length) sendInputEvent({ type: 'text', text: v.slice(last.length) });
+  else if (v.length < last.length) sendInputEvent({ type: 'key', key: 'Backspace', n: last.length - v.length });
   last = v;
 });
-$('bksp').addEventListener('click', () => { api('/api/remote/input', { type: 'key', key: 'Backspace' }); });
-$('enter').addEventListener('click', () => { api('/api/remote/input', { type: 'key', key: 'Enter' }); box.value = ''; last = ''; });
+$('bksp').addEventListener('click', () => { sendInputEvent({ type: 'key', key: 'Backspace' }); });
+$('enter').addEventListener('click', () => { sendInputEvent({ type: 'key', key: 'Enter' }); box.value = ''; last = ''; });
 
-async function poll() {
+// HTTP status polling fallback
+async function pollHttp() {
   while (!doneFlag) {
     try {
       const r = await fetch('/api/remote/status', { cache: 'no-store' });
       const s = await r.json();
-      if (s.status === 'captured') { doneFlag = true; $('live').style.display = 'none'; $('done').style.display = 'block'; break; }
-      if (!s.active && started) { // window closed without capture
-        $('err').style.display = 'block';
-        $('err').textContent = 'The sign-in window closed before finishing. Reload to try again, or paste sp_dc manually on setup.';
-        break;
-      }
+      handleStatus(s);
+      if (doneFlag || (!s.active && started)) break;
     } catch {}
     await new Promise((r) => setTimeout(r, 1500));
   }

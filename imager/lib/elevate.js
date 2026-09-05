@@ -10,23 +10,67 @@ const fs = require('fs');
 
 const CHILD = path.join(__dirname, 'writer-child.js');
 
-function isElevated() {
-  if (process.platform !== 'win32') return process.getuid && process.getuid() === 0;
-  try {
-    // fltmc needs admin; its exit status is the cheapest reliable probe.
-    execFileSync('fltmc', ['filters'], { stdio: 'ignore' });
-    return true;
-  } catch { return false; }
+/**
+ * Absolute path to a System32 tool. A 32-bit build on 64-bit Windows gets
+ * silently redirected to SysWOW64, where the disk tools do not exist, so bare
+ * names like `fltmc` fail with ENOENT and read as "not elevated" forever.
+ */
+function winTool(name) {
+  const root = process.env.SystemRoot || 'C:\Windows';
+  const wow64 = process.arch === 'ia32' && (process.env.PROCESSOR_ARCHITEW6432 ||
+    process.env.PROCESSOR_ARCHITECTURE === 'AMD64');
+  const dirs = wow64 ? ['Sysnative', 'System32'] : ['System32'];
+  for (const d of dirs) {
+    const p = path.join(root, d, name);
+    if (fs.existsSync(p)) return p;
+  }
+  return name;   // let PATH resolution have the last word
 }
 
-/** Relaunch this app elevated (Windows only) and return true if the prompt was accepted. */
+function isElevated() {
+  if (process.platform !== 'win32') return Boolean(process.getuid && process.getuid() === 0);
+  try {
+    // fltmc needs admin; its exit status is the cheapest reliable probe.
+    execFileSync(winTool('fltmc.exe'), ['filters'], { stdio: 'ignore', windowsHide: true });
+    return true;
+  } catch (err) {
+    // ENOENT means the probe itself never ran — fall back to something that
+    // only an elevated process can do, rather than reporting a false negative.
+    if (err && err.code === 'ENOENT') {
+      try { fs.closeSync(fs.openSync('\\.\PHYSICALDRIVE0', 'r')); return true; }
+      catch { /* genuinely unelevated, or no disk 0 */ }
+    }
+    return false;
+  }
+}
+
+/**
+ * Relaunch this app elevated (Windows only). Throws when the UAC prompt is
+ * dismissed, so the caller can leave the current window alone.
+ */
 function relaunchElevated() {
   const exe = process.execPath;
-  const args = process.argv.slice(1).filter((a) => !a.startsWith('--'));
-  const list = args.length ? args.map((a) => `'${a.replace(/'/g, "''")}'`).join(',') : '';
-  const ps = `Start-Process -FilePath '${exe.replace(/'/g, "''")}' -Verb RunAs` +
-             (list ? ` -ArgumentList ${list}` : '');
-  execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], { stdio: 'ignore' });
+  // In a packaged build argv is just the exe; running from source it is
+  // `electron .`, where "." only resolves against the app directory. An
+  // elevated Start-Process starts in System32, so both the argument and the
+  // working directory have to be made absolute here.
+  const appDir = path.resolve(__dirname, '..');
+  const args = process.argv.slice(1)
+    .filter((a) => !a.startsWith('--'))
+    .map((a) => (a === '.' ? appDir : a));
+  const q = (s) => `'${String(s).replace(/'/g, "''")}'`;
+  const ps = [
+    `Start-Process -FilePath ${q(exe)} -Verb RunAs -WorkingDirectory ${q(appDir)}`,
+    args.length ? `-ArgumentList ${args.map(q).join(',')}` : '',
+  ].filter(Boolean).join(' ');
+
+  try {
+    execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps],
+      { stdio: 'ignore', windowsHide: true });
+    return true;
+  } catch {
+    throw new Error('The Administrator prompt was dismissed. Choose Yes on it, or right-click the app and pick "Run as administrator".');
+  }
 }
 
 /**
@@ -41,11 +85,15 @@ function startWriter({ src, dest, verify }) {
   if (verify) argv.push('--verify');
 
   if (process.platform === 'win32') {
-    // The app is already elevated by the time a write can be started.
+    // The app is already elevated by the time a write can be started. Keep the
+    // child's stderr: when it dies before it can write the progress file, that
+    // text is the only account of why.
     const child = spawn(process.execPath, argv, {
       env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
-      stdio: 'ignore', detached: false,
+      stdio: ['ignore', 'ignore', 'pipe'], detached: false, windowsHide: true,
     });
+    child.stderrText = '';
+    child.stderr.on('data', (b) => { child.stderrText = (child.stderrText + b).slice(-4000); });
     return { progress, child };
   }
 
@@ -68,4 +116,4 @@ function startWriter({ src, dest, verify }) {
 
 function shq(s) { return `'${String(s).replace(/'/g, `'\''`)}'`; }
 
-module.exports = { isElevated, relaunchElevated, startWriter };
+module.exports = { isElevated, relaunchElevated, startWriter, winTool };

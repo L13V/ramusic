@@ -88,7 +88,15 @@ chmod +x "$ROOT/bin/"*.sh
 REPO="$(head -n1 "$OVERLAY/seed/repo.txt" 2>/dev/null | tr -d '[:space:]')"
 TARBALL=""
 VERSION=""
-if [ -n "$REPO" ] && [ "$REPO" != "OWNER/REPO" ]; then
+# A tarball placed in the overlay wins: the release build drops the payload it
+# has just made there, and that is more current than /releases/latest — which
+# still shows the previous version while this one is a draft.
+SEED_TGZ="$(ls "$OVERLAY"/seed/ramtech-app-*.tar.gz 2>/dev/null | head -n1 || true)"
+if [ -n "$SEED_TGZ" ]; then
+  echo "=== Using seeded payload $(basename "$SEED_TGZ") ==="
+  TARBALL="$SEED_TGZ"
+  VERSION="$(basename "$SEED_TGZ" .tar.gz | sed 's/^ramtech-app-//')"
+elif [ -n "$REPO" ] && [ "$REPO" != "OWNER/REPO" ]; then
   echo "=== Fetching latest release from $REPO ==="
   REL_JSON="$(curl -fsS -m 30 -H 'accept: application/vnd.github+json' -H 'user-agent: ramtech-build' \
     "https://api.github.com/repos/$REPO/releases/latest" || true)"
@@ -97,14 +105,6 @@ if [ -n "$REPO" ] && [ "$REPO" != "OWNER/REPO" ]; then
   if [ -n "$URL" ]; then
     TARBALL=/tmp/ramtech-app.tar.gz
     curl -fL --retry 3 -o "$TARBALL" "$URL"
-  fi
-fi
-# Offline fallback: a tarball pre-placed in the overlay.
-if [ -z "$TARBALL" ]; then
-  SEED_TGZ="$(ls "$OVERLAY"/seed/ramtech-app-*.tar.gz 2>/dev/null | head -n1 || true)"
-  if [ -n "$SEED_TGZ" ]; then
-    TARBALL="$SEED_TGZ"
-    VERSION="$(basename "$SEED_TGZ" .tar.gz | sed 's/^ramtech-app-//')"
   fi
 fi
 if [ -z "$TARBALL" ]; then

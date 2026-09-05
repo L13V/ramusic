@@ -13,6 +13,7 @@
   <p>Writing a bootable USB stick means writing to raw disk sectors, which Windows
      only allows to an elevated program.</p>
   <button id="relaunch" class="primary">Restart as administrator</button>
+  <p id="relaunch-error" class="bad detail" hidden></p>
 </div>
 
 <main id="app" hidden>
@@ -94,7 +95,7 @@
 <div id="error" class="overlay" hidden>
   <div class="panel">
     <h2 class="bad">That didn't work</h2>
-    <p id="error-detail"></p>
+    <p id="error-detail" class="detail"></p>
     <button id="error-back" class="ghost">Back</button>
   </div>
 </div>
