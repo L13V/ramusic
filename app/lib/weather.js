@@ -1,6 +1,7 @@
 // lib/weather.js — Open-Meteo, no API key. Geocode once, cache, refresh weather hourly.
 let geo = null;              // { lat, lon, label }
 let cache = { data: null, exp: 0 };
+let lastCity = null;         // caches are per-city: a /setup change busts them
 
 const CODE = {
   0: ['Clear', '☀️'], 1: ['Mostly clear', '🌤️'], 2: ['Partly cloudy', '⛅'],
@@ -26,10 +27,12 @@ async function geocode(city) {
   return geo;
 }
 
-export async function getWeather(env) {
+export async function getWeather(env, cityOverride) {
+  const city = cityOverride || env.WEATHER_CITY || 'San Francisco';
+  if (city !== lastCity) { geo = null; cache = { data: null, exp: 0 }; lastCity = city; }
   if (cache.data && Date.now() < cache.exp) return cache.data;
   try {
-    const g = await geocode(env.WEATHER_CITY || 'San Francisco');
+    const g = await geocode(city);
     const unit = (env.TEMP_UNIT || 'fahrenheit').toLowerCase();
     const u = new URL('https://api.open-meteo.com/v1/forecast');
     u.searchParams.set('latitude', g.lat);

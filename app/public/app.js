@@ -13,9 +13,42 @@ function tickClock() {
   $('time').textContent = `${cfg.clock24h ? String(h).padStart(2,'0') : h}:${m}${suffix}`;
   $('date').textContent = now.toLocaleDateString(undefined,
     { weekday: 'long', month: 'long', day: 'numeric' });
+  tickCountdown(now);
 }
 setInterval(tickClock, 1000);
 tickClock();
+
+// ── Countdown to a date (configured in /setup; rides the clock tick) ──
+// Far out it shows whole days; inside 48h it flips to a live H:MM:SS timer;
+// on the day itself it celebrates; after that it hides.
+function tickCountdown(now) {
+  const el = $('countdown');
+  const raw = cfg.countdown?.date;
+  if (!raw) { el.hidden = true; return; }
+  // A bare YYYY-MM-DD parses as UTC midnight — pin it to LOCAL midnight so the
+  // countdown flips at 12am on the TV, not at some UTC offset.
+  const target = /^\d{4}-\d{2}-\d{2}$/.test(raw) ? new Date(raw + 'T00:00:00') : new Date(raw);
+  if (Number.isNaN(target.getTime())) { el.hidden = true; return; }
+  const label = cfg.countdown?.label || target.toLocaleDateString(undefined, { month: 'long', day: 'numeric' });
+  const diff = target - now;
+  let big, sub, today = false;
+  if (diff <= -86400000) { el.hidden = true; return; }          // day's over — done
+  if (diff <= 0) {
+    today = true; big = `🎉 ${label}`; sub = `it's today!`;
+  } else if (diff < 48 * 3600000) {
+    const s = Math.floor(diff / 1000);
+    big = `${Math.floor(s / 3600)}:${String(Math.floor(s / 60) % 60).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+    sub = `until ${label}`;
+  } else {
+    const days = Math.ceil(diff / 86400000);
+    big = `${days} days`;
+    sub = `until ${label}`;
+  }
+  const html = `<span class="cd-big">${escapeHtml(big)}</span><span class="cd-sub">${escapeHtml(sub)}</span>`;
+  if (el.innerHTML !== html) el.innerHTML = html;
+  el.classList.toggle('is-today', today);
+  el.hidden = false;
+}
 
 const fmt = (ms) => {
   const s = Math.floor((ms || 0) / 1000);

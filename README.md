@@ -118,12 +118,17 @@ needed**.
   most smart-TV built-in browsers do **not** qualify; use a Pi/mini-PC).
 - Set `WEBPLAYER=false` to turn the TV back into a display-only dashboard.
 
-### 5. Weather + clock
-In `.env`:
+### 5. Weather, clock & countdown
+The **weather place** and an optional **countdown** (e.g. "⏳ 42 days until
+Kickoff", shown under the clock; flips to a live timer in the last 48 h) are
+set from the **/setup page → Dashboard preferences** — no restart needed.
+`.env` values act as defaults:
 ```
 WEATHER_CITY=San Francisco
 TEMP_UNIT=fahrenheit      # or celsius
 CLOCK_24H=false           # true for 24-hour time
+COUNTDOWN_DATE=2026-12-31 # optional; /setup value wins
+COUNTDOWN_LABEL=New Year
 ```
 Weather uses Open-Meteo — free, no API key.
 
@@ -197,10 +202,14 @@ Connect device named **RAMTECH TV**. One-time: on your phone's Spotify app (same
 account, **Premium**), open the devices menu and tap **RAMTECH TV** once to authorize
 it; it then reconnects on its own forever.
 
-**Playback rule:** music plays **only while someone else is in the Jam** — the server
-starts it on the Pi when a guest joins and pauses when the last guest leaves
-(`JAM_PLAY_ON_GUEST=true`). Scanning the QR just joins the Jam; the join is what
-triggers playback.
+**Playback rule:** music plays **only while someone else is in the Jam**, and
+**joining is what starts it**: Spotify gives remote guests no way to start the
+host's playback (a guest pressing play on their phone starts *local* playback and
+drops them out of the Jam), so the host must be playing for guest phones to mirror
+the Jam and queue into it. Boot is silent (the seed playlist is loaded but paused —
+just enough for the QR to appear); the first guest joining starts playback once;
+a deliberate pause mid-Jam is respected, not fought; the last guest leaving pauses
+the Pi again (`JAM_PLAY_ON_GUEST=true` controls all of this).
 
 ## File map
 ```

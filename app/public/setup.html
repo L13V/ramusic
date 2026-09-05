@@ -167,6 +167,21 @@ details[open] summary{margin-bottom:8px}
     </details>
   </div>
 
+  <!-- Dashboard preferences: weather place + countdown -->
+  <div class="step" id="step-prefs">
+    <div class="step-head"><div class="badge">⚙</div><div class="step-title">Dashboard preferences</div><div class="step-opt">OPTIONAL</div></div>
+    <p>Tune what the TV shows. Leave a field empty to use the default.</p>
+    <label for="weatherCity">Weather place</label>
+    <input id="weatherCity" autocomplete="off" placeholder="e.g. Chicago, Tel Aviv, 90210" style="font-family:inherit"/>
+    <label for="countdownLabel">Countdown label</label>
+    <input id="countdownLabel" autocomplete="off" placeholder="e.g. Kickoff, Regionals" style="font-family:inherit"/>
+    <label for="countdownDate">Countdown date</label>
+    <input id="countdownDate" type="date"/>
+    <p class="hint" style="margin:8px 0 0">The TV shows "⏳ N days until &lt;label&gt;" under the clock, switches to a live timer in the last 48 hours, and hides itself the day after. Clear the date to remove it.</p>
+    <button class="btn ghost" id="savePrefs">Save preferences</button>
+    <div class="save-note" id="prefsNote"></div>
+  </div>
+
   </div><!-- /setup-body -->
 
 <script>
@@ -238,7 +253,15 @@ async function refresh(first) {
   }
   if (first && s.hasClientId) $('clientId').placeholder = 'saved (' + s.clientIdPreview + ')';
   if (first && s.hasSpDc) $('spDc').placeholder = 'saved ✓';
+  // Prefill preferences once (not on every poll — the user may be mid-typing).
+  if (!prefsFilled && s.prefs) {
+    prefsFilled = true;
+    $('weatherCity').value = s.prefs.weatherCity || '';
+    $('countdownLabel').value = s.prefs.countdownLabel || '';
+    $('countdownDate').value = s.prefs.countdownDate || '';
+  }
 }
+let prefsFilled = false;
 function setDone(stepId, badgeId, done) {
   $(stepId).classList.toggle('done', !!done);
   $(badgeId).textContent = done ? '✓' : badgeId.slice(1);
@@ -307,6 +330,16 @@ $('saveSpDc').addEventListener('click', async () => {
   await post('/api/setup/creds', { spDc: v });
   $('spDcNote').textContent = '✓ Saved — Jam features enabled';
   refresh();
+});
+
+$('savePrefs').addEventListener('click', async () => {
+  const j = await post('/api/setup/prefs', {
+    weatherCity: $('weatherCity').value.trim(),
+    countdownLabel: $('countdownLabel').value.trim(),
+    countdownDate: $('countdownDate').value.trim(),
+  });
+  $('prefsNote').textContent = j.ok ? '✓ Saved — the TV updates on its next refresh' : (j.error || 'Save failed');
+  if (j.ok) setTimeout(() => ($('prefsNote').textContent = ''), 2500);
 });
 
 $('disconnect').addEventListener('click', async () => {

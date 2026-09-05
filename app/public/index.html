@@ -27,6 +27,7 @@
       <div class="clock">
         <div id="time">--:--</div>
         <div id="date">—</div>
+        <div id="countdown" hidden></div>
       </div>
       <div class="brand">
         <img id="brand-logo" class="brand-logo" src="/ramtech-logo.png" alt="RAMTECH"
@@ -56,7 +57,8 @@
           <h2 id="artist">Start the music on Spotify</h2>
           <div id="scrub"><div id="scrub-fill"></div></div>
           <div id="times"><span id="t-cur">0:00</span><span id="t-dur">0:00</span></div>
-          <!-- Touch transport controls (Promethean/any touchscreen or mouse) -->
+          <!-- Touch transport controls (Promethean/any touchscreen or mouse),
+               with the volume strip riding in the same row, right of the buttons -->
           <div id="controls" class="controls">
             <button class="ctl" id="ctl-prev" aria-label="Previous">
               <svg viewBox="0 0 24 24"><path d="M6 5h2v14H6zM20 5v14L9.5 12z"/></svg>
@@ -68,13 +70,13 @@
             <button class="ctl" id="ctl-next" aria-label="Skip">
               <svg viewBox="0 0 24 24"><path d="M16 5h2v14h-2zM4 5v14l10.5-7z"/></svg>
             </button>
-          </div>
-          <div id="vol" class="vol" hidden>
-            <button class="vol-btn" id="vol-down" aria-label="Volume down">‹</button>
-            <span class="vol-ic">🔊</span>
-            <input id="vol-range" class="vol-range" type="range" min="0" max="100" value="80" aria-label="Volume"/>
-            <button class="vol-btn" id="vol-up" aria-label="Volume up">›</button>
-            <span class="vol-val" id="vol-val">80%</span>
+            <div id="vol" class="vol" hidden>
+              <button class="vol-btn" id="vol-down" aria-label="Volume down">‹</button>
+              <span class="vol-ic">🔊</span>
+              <input id="vol-range" class="vol-range" type="range" min="0" max="100" value="80" aria-label="Volume"/>
+              <button class="vol-btn" id="vol-up" aria-label="Volume up">›</button>
+              <span class="vol-val" id="vol-val">80%</span>
+            </div>
           </div>
           <div id="now-added" class="added"></div>
         </div>

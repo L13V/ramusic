@@ -11,7 +11,7 @@ import { getState, setWebDeviceId, getWebDeviceId, currentJoinUrl } from './lib/
 import { demoState } from './lib/demo.js';
 import { getWeather } from './lib/weather.js';
 import {
-  isConfigured, getCreds, saveStore, disconnect,
+  isConfigured, getCreds, saveStore, loadStore, disconnect,
   createLoginUrl, exchangeCode, getProfile, getAccessToken, lanIp, getTls,
 } from './lib/auth.js';
 import { startTunnel, stopTunnel, tunnelState } from './lib/tunnel.js';
@@ -32,11 +32,23 @@ const isDemo = () => String(env.DEMO).toLowerCase() === 'true' || env.DEMO === '
 const tunnelEnabled = () => String(env.TUNNEL ?? 'true').toLowerCase() !== 'false';
 const webPlayerEnabled = () => String(env.WEBPLAYER ?? 'true').toLowerCase() !== 'false';
 
+// Dashboard preferences: values saved from /setup (the .data store) win over
+// .env, same rule as credentials. Empty store value = fall back to env.
+const prefs = () => {
+  const s = loadStore();
+  return {
+    weatherCity: s.weatherCity || env.WEATHER_CITY || '',
+    countdownDate: s.countdownDate || env.COUNTDOWN_DATE || '',
+    countdownLabel: s.countdownLabel || env.COUNTDOWN_LABEL || '',
+  };
+};
+
 // Client-facing config, shared by every /api/state response.
 const clientConfig = () => ({
   clock24h: String(env.CLOCK_24H).toLowerCase() === 'true',
   refreshMs: Number(env.REFRESH_MS) || 5000,
-  city: env.WEATHER_CITY || '',
+  city: prefs().weatherCity,
+  countdown: { date: prefs().countdownDate, label: prefs().countdownLabel },
   webPlayer: webPlayerEnabled() && !isDemo(),
   deviceName: env.WEBPLAYER_NAME || 'TV Jam',
   // Volume/playback exist whenever an account is connected — covers the Pi's
@@ -88,7 +100,7 @@ const setupOrigin = () => {
 // ─────────────────────────────────────────────────────────────
 app.get('/api/state', async (_req, res) => {
   try {
-    const weatherP = getWeather(env);
+    const weatherP = getWeather(env, prefs().weatherCity);
     ensureTunnel(); // keep the public tunnel up (for setup AND the Jam QR)
 
     // Not signed in yet (and not demo) -> tell the TV to show the setup screen.
@@ -180,43 +192,62 @@ app.put('/api/player/transfer', async (req, res) => {
   }
 });
 
-// A Jam plays through its host; if the host (this TV) isn't playing, guests see
-// "waiting for host to start playback". JAM_AUTOSTART controls whether we play
-// on boot (default off — see the /j redirect, which starts playback on scan);
-// JAM_DEFAULT_URI sets what plays. Playing needs Spotify Premium, and gesture-
-// free start needs the kiosk flag (start.bat provides it).
+// A Jam plays through its host; if the host (this TV) isn't playing, guests
+// see "waiting for host to start playback" — and a remote guest CANNOT fix
+// that from their phone (their play button starts local playback and drops
+// them out of the Jam). So: JAM_AUTOSTART=true ARMS the TV on boot — active
+// device, default context loaded, PAUSED — which is enough for the Jam + QR
+// to appear silently; actual sound starts when the first guest joins (see
+// manageJamPlayback). JAM_DEFAULT_URI sets what gets loaded. Needs Premium.
 const jamAutostart = () => String(env.JAM_AUTOSTART ?? 'false').toLowerCase() === 'true';
 const jamDefaultUri = () => env.JAM_DEFAULT_URI || 'spotify:playlist:37i9dQZF1DXcBWIGoYBM5M';
 
-// Make the TV the active device and (when forced, or JAM_AUTOSTART is on) start
-// a default context if nothing is loaded. Returns a short status string.
-async function ensurePlaying(deviceId, { force = false } = {}) {
+// Make the TV the active device. Silent by default (the handoff never starts
+// sound); what happens to the loaded context depends on the caller:
+//  - force (first guest joined, or the manual ▶ button): actually play,
+//    seeding the default context if nothing is loaded.
+//  - arm (JAM_AUTOSTART boot): seed the default context if nothing is
+//    loaded, but leave it PAUSED — just enough for the Jam QR to exist.
+// Returns a short status string.
+async function ensurePlaying(deviceId, { force = false, arm = false } = {}) {
   if (!deviceId) return 'no-device';
   const tok = await getAccessToken(env);
   const H = { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' };
-  // 1) Hand playback to the TV, resuming whatever context exists.
+  // 1) Hand playback to the TV. Only the manual button starts sound here.
   await fetch('https://api.spotify.com/v1/me/player', {
-    method: 'PUT', headers: H, body: JSON.stringify({ device_ids: [deviceId], play: true }),
+    method: 'PUT', headers: H, body: JSON.stringify({ device_ids: [deviceId], play: force }),
   });
-  // 2) Start a default only if asked (scan / manual play / JAM_AUTOSTART) and
-  //    nothing is already loaded — never clobbers an existing track.
-  if (!force && !jamAutostart()) return 'resumed';
+  // 2) Seed the default context only if asked (manual play / guest arm /
+  //    JAM_AUTOSTART boot) and nothing is loaded — never clobbers a track.
+  if (!force && !arm && !jamAutostart()) return 'active';
   await new Promise((r) => setTimeout(r, 1200)); // let the transfer settle
   const cur = await fetch('https://api.spotify.com/v1/me/player/currently-playing', { headers: { Authorization: `Bearer ${tok}` } });
   let hasTrack = false;
   if (cur.status === 200) { const j = await cur.json().catch(() => null); hasTrack = !!j?.item; }
-  if (hasTrack) return 'resumed';
+  if (hasTrack) return force ? 'resumed' : 'armed';
   const pr = await fetch(
     `https://api.spotify.com/v1/me/player/play?device_id=${encodeURIComponent(deviceId)}`,
     { method: 'PUT', headers: H, body: JSON.stringify({ context_uri: jamDefaultUri() }) }
   );
-  return pr.ok ? 'default' : `default-failed-${pr.status}`;
+  if (!pr.ok) return `default-failed-${pr.status}`;
+  if (force) return 'default';
+  // Arming: the play call above is only how a context gets loaded — pause it
+  // right away so the guest sees a track ready to go, not hears one.
+  await new Promise((r) => setTimeout(r, 500));
+  await fetch(`https://api.spotify.com/v1/me/player/pause?device_id=${encodeURIComponent(deviceId)}`, {
+    method: 'PUT', headers: H,
+  });
+  return 'armed-default';
 }
 
 // ── Jam-driven playback ──────────────────────────────────────
-// Music plays only while someone ELSE is in the Jam. On each poll we look at the
-// members: a non-owner present -> start playing on the Pi's player (librespot,
-// matched by name) / the web player; nobody left -> pause what we started.
+// Music plays only while someone ELSE is in the Jam, and joining IS the play
+// press: Spotify gives remote guests no way to start the host's playback (a
+// guest phone pressing play starts LOCAL playback and drops them out of the
+// Jam), so the host must be playing for guest phones to mirror + queue. On
+// each poll: first non-owner appears -> start the Pi's player (librespot,
+// matched by name) / the web player ONCE; nobody left -> pause it. Between
+// those two moments the transport belongs to humans — a pause isn't fought.
 const autoPlayOnGuest = () => String(env.JAM_PLAY_ON_GUEST ?? 'true').toLowerCase() !== 'false';
 let jamAuto = { started: false, deviceId: null, devTs: 0 };
 
@@ -262,9 +293,11 @@ async function playerStatus() {
   } catch { return null; }
 }
 
-// Idle unless a guest is in the Jam. Guest present -> the Pi's player is playing;
-// nobody but the owner -> the Pi is paused (idle). Scoped to the Pi's own device
-// so it never touches music playing on your phone/other speakers.
+// Idle unless a guest is in the Jam. First guest -> start the Pi's player ONCE
+// (join = consent to music; see the Spotify constraint above). While guests
+// remain, the transport belongs to humans — a deliberate pause isn't fought.
+// Nobody but the owner -> the Pi goes idle. Pausing is scoped to the Pi's own
+// device so it never touches music playing on your phone/other speakers.
 let zeroGuestsSince = 0;              // debounce: a lookup blip must not pause
 const GUEST_GONE_GRACE_MS = 15_000;   // guests must be gone this long to pause
 
@@ -274,11 +307,13 @@ async function manageJamPlayback(state) {
 
   if (guests > 0) {
     zeroGuestsSince = 0;
-    const dev = await resolvePlaybackDevice();
-    if (!dev) return;
+    if (jamAuto.started) return;       // started for this crowd — humans own it now
     const ps = await playerStatus();
-    const piPlaying = ps && ps.playing && ps.deviceId === dev;
-    if (!piPlaying) { await ensurePlaying(dev, { force: true }); jamAuto.started = true; }
+    if (ps?.playing) { jamAuto.started = true; return; } // already live somewhere
+    const dev = await resolvePlaybackDevice();
+    if (!dev) return;                  // no player yet — retry next poll
+    await ensurePlaying(dev, { force: true });
+    jamAuto.started = true;
     return;
   }
 
@@ -287,15 +322,15 @@ async function manageJamPlayback(state) {
   if (!zeroGuestsSince) zeroGuestsSince = Date.now();
   if (Date.now() - zeroGuestsSince < GUEST_GONE_GRACE_MS) return;
 
-  // Guests really gone -> enforce idle. Only act if something is playing.
+  // Guests really gone -> enforce idle; start fresh for the next guest.
   if (!state.isPlaying) { jamAuto.started = false; return; }
   const dev = await resolvePlaybackDevice();
   const ps = await playerStatus();
   const piPlaying = ps && ps.playing && dev && ps.deviceId === dev;
-  if (piPlaying || jamAuto.started) {    // the Pi (jam host) is playing -> stop it
+  if (piPlaying) {                     // the Pi (jam host) is playing -> stop it
     await pausePlayback();
-    jamAuto.started = false;
   }
+  jamAuto.started = false;
 }
 let jamMgmtBusy = false;
 function kickJamPlayback(state) {
@@ -333,13 +368,9 @@ app.put('/api/player/volume', async (req, res) => {
   }
 });
 
-// Scan target for the Jam QR: kick off playback on the TV (so the Jam has a
-// host), then forward the phone straight into the Jam. This is how the QR
-// "starts playing" without auto-playing on boot.
-// Scan target for the Jam QR: forward the phone straight into the live Jam.
-// Playback is NOT started here — the server starts it once the scanner actually
-// shows up as a member (see manageJamPlayback), so music only plays with guests.
 // Touch controls on the TV: act on whatever device is playing via the Web API.
+// (The Jam QR's /j redirect doesn't start playback — the scanner showing up as
+// a member is what starts it, via manageJamPlayback.)
 app.post('/api/player/control/:action', async (req, res) => {
   const map = {
     play: ['PUT', '/me/player/play'],
@@ -455,6 +486,7 @@ app.get('/api/setup/status', async (req, res) => {
     origin: `${req.protocol}://${req.get('host')}`,
     httpsUp,
     tunnel: t,
+    prefs: prefs(),
     locked: !setupUnlocked(req), // client must enter the TV code before changes
   });
 });
@@ -467,6 +499,24 @@ app.post('/api/setup/creds', requireSetupAuth, (req, res) => {
   if (spDc !== undefined) patch.spDc = String(spDc).trim();
   saveStore(patch);
   res.json({ ok: true });
+});
+
+// Dashboard preferences (weather city, countdown). Empty string clears the
+// saved value (saveStore drops empty keys), falling back to .env.
+app.post('/api/setup/prefs', requireSetupAuth, (req, res) => {
+  const { weatherCity, countdownDate, countdownLabel } = req.body || {};
+  const patch = {};
+  if (weatherCity !== undefined) patch.weatherCity = String(weatherCity).trim();
+  if (countdownDate !== undefined) {
+    const d = String(countdownDate).trim();
+    if (d && Number.isNaN(Date.parse(d))) {
+      return res.status(400).json({ ok: false, error: 'Countdown date must be a valid date (YYYY-MM-DD).' });
+    }
+    patch.countdownDate = d;
+  }
+  if (countdownLabel !== undefined) patch.countdownLabel = String(countdownLabel).trim();
+  saveStore(patch);
+  res.json({ ok: true, prefs: prefs() });
 });
 
 app.post('/api/setup/disconnect', requireSetupAuth, (_req, res) => {
