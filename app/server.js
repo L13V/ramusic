@@ -162,9 +162,11 @@ app.get('/api/health', (_req, res) => res.json({ ok: true, ts: Date.now() }));
 // ─────────────────────────────────────────────────────────────
 
 // Short-lived access token for the Web Playback SDK running in the TV page.
-// Same trust boundary as the dashboard itself (a LAN app); the token carries
-// the streaming/playback scopes so keep this server on a trusted network.
-app.get('/api/token', async (_req, res) => {
+// LOCAL ONLY. This token carries streaming + user-modify-playback-state, so
+// serving it to whoever reaches the public tunnel would hand the account over
+// to anyone who guessed the loca.lt URL. The TV and the LAN get it; the tunnel
+// never does.
+app.get('/api/token', requireLocal, async (_req, res) => {
   if (isDemo() || !webPlayerEnabled()) return res.status(404).json({ ok: false });
   try {
     const accessToken = await getAccessToken(env);
@@ -177,7 +179,7 @@ app.get('/api/token', async (_req, res) => {
 
 // The TV page reports its SDK device id here so the server can attach the Jam
 // to the exact device that's playing (current_or_new?local_device_id=…).
-app.post('/api/player/device', (req, res) => {
+app.post('/api/player/device', requireLocal, (req, res) => {
   const { deviceId } = req.body || {};
   setWebDeviceId(deviceId ? String(deviceId) : null);
   res.json({ ok: true });
@@ -186,7 +188,7 @@ app.post('/api/player/device', (req, res) => {
 // Hand playback to a device (the TV's SDK device) and start it. Called once
 // the SDK reports ready, so the TV actually produces sound and — because it's
 // now the active device — the Jam can auto-create against it.
-app.put('/api/player/transfer', async (req, res) => {
+app.put('/api/player/transfer', requireLocal, async (req, res) => {
   if (isDemo() || !webPlayerEnabled()) return res.status(404).json({ ok: false });
   const { deviceId, play = true } = req.body || {};
   if (!deviceId) return res.status(400).json({ ok: false, error: 'deviceId required' });
@@ -358,7 +360,7 @@ function kickJamPlayback(state) {
   manageJamPlayback(state).catch(() => {}).finally(() => { jamMgmtBusy = false; });
 }
 
-app.put('/api/player/ensure', async (req, res) => {
+app.put('/api/player/ensure', requireLocal, async (req, res) => {
   if (isDemo() || !webPlayerEnabled()) return res.status(404).json({ ok: false });
   const { deviceId, force } = req.body || {};
   if (!deviceId) return res.status(400).json({ ok: false, error: 'deviceId required' });
@@ -372,7 +374,7 @@ app.put('/api/player/ensure', async (req, res) => {
 
 // Set the TV/active-device volume from the dashboard (Web API fallback; the TV
 // page controls its own SDK volume directly for instant response).
-app.put('/api/player/volume', async (req, res) => {
+app.put('/api/player/volume', requireLocal, async (req, res) => {
   if (isDemo() || !webPlayerEnabled()) return res.status(404).json({ ok: false });
   const pct = Math.max(0, Math.min(100, Math.round(Number(req.query.percent ?? req.body?.percent))));
   if (Number.isNaN(pct)) return res.status(400).json({ ok: false, error: 'percent required' });
@@ -390,7 +392,7 @@ app.put('/api/player/volume', async (req, res) => {
 // Touch controls on the TV: act on whatever device is playing via the Web API.
 // (The Jam QR's /j redirect doesn't start playback — the scanner showing up as
 // a member is what starts it, via manageJamPlayback.)
-app.post('/api/player/control/:action', async (req, res) => {
+app.post('/api/player/control/:action', requireLocal, async (req, res) => {
   const map = {
     play: ['PUT', '/me/player/play'],
     pause: ['PUT', '/me/player/pause'],
@@ -461,11 +463,43 @@ const setupGate = { otp: null, otpExp: 0, tokens: new Map() };
 const OTP_TTL = 5 * 60_000;       // code is valid for 5 min after it's shown
 const SESSION_TTL = 30 * 60_000;  // once entered, changes stay unlocked 30 min
 
+// Anything the public tunnel forwarded carries one of these. Their presence is
+// what separates "someone on our own wire" from "someone on the internet who
+// guessed the loca.lt URL", so every trust decision below starts here.
+function isForwarded(req) {
+  return !!(req.headers['cf-connecting-ip'] || req.headers['x-forwarded-for'] || req.headers['forwarded']);
+}
+const peerIp = (req) => String(req.ip || req.socket?.remoteAddress || '').replace('::ffff:', '');
+
 // Direct request from the TV/host itself (not forwarded by the tunnel).
 function isLoopback(req) {
-  if (req.headers['cf-connecting-ip'] || req.headers['x-forwarded-for'] || req.headers['forwarded']) return false;
-  const ip = String(req.ip || req.socket?.remoteAddress || '').replace('::ffff:', '');
+  if (isForwarded(req)) return false;
+  const ip = peerIp(req);
   return ip === '127.0.0.1' || ip === '::1' || ip === 'localhost';
+}
+
+// This machine or the LAN it sits on — never the public tunnel. The dashboard
+// is documented as viewable from any device on the network, so "local" has to
+// mean more than loopback; it must never mean "reachable from the internet".
+function isLocalNetwork(req) {
+  if (isForwarded(req)) return false;
+  const ip = peerIp(req);
+  if (ip === '127.0.0.1' || ip === '::1' || ip === 'localhost') return true;
+  if (/^10\./.test(ip)) return true;
+  if (/^192\.168\./.test(ip)) return true;
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(ip)) return true;
+  if (/^169\.254\./.test(ip)) return true;                    // link-local
+  if (/^(fe80|fc|fd)/i.test(ip)) return true;                 // IPv6 link-local / ULA
+  return false;
+}
+
+// Gate for everything that acts on the Spotify account on the TV's behalf:
+// the SDK token and the transport controls. These are what the dashboard page
+// itself calls, so they have to work from the TV and the LAN — but handing an
+// account-scoped token to whoever finds the tunnel URL is not "a LAN app".
+function requireLocal(req, res, next) {
+  if (isLocalNetwork(req)) return next();
+  res.status(403).json({ ok: false, error: 'local-only' });
 }
 function beginOtp() {
   setupGate.otp = String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
@@ -494,12 +528,49 @@ function requireSetupAuth(req, res, next) {
   res.status(401).json({ ok: false, error: 'setup-locked', needOtp: true });
 }
 
+// A 6-digit code is only a secret while guessing costs something, and /setup is
+// deliberately reachable from the internet. Lock an address out after 5 wrong
+// codes, and throttle `begin` too — it reprints the code on the TV, so spamming
+// it is both a nuisance on screen and a way to farm fresh 5-minute windows.
+const otpFails = new Map(); // ip -> { count, until }
+const OTP_LOCKOUT_MS = 5 * 60_000;
+const OTP_MAX_FAILS = 5;
+function otpLimited(ip) {
+  const f = otpFails.get(ip);
+  return !!(f && f.until && Date.now() < f.until);
+}
+function otpRecordFail(ip) {
+  const f = otpFails.get(ip) || { count: 0, until: 0 };
+  f.count += 1;
+  if (f.count >= OTP_MAX_FAILS) { f.until = Date.now() + OTP_LOCKOUT_MS; f.count = 0; }
+  otpFails.set(ip, f);
+}
+
+let lastOtpBegin = 0;
 // Phone opens /setup -> it calls this to make a fresh code appear on the TV.
-app.post('/api/setup/otp/begin', (_req, res) => res.json({ ok: true, expiresAt: beginOtp() }));
+app.post('/api/setup/otp/begin', (req, res) => {
+  if (otpLimited(peerIp(req))) {
+    return res.status(429).json({ ok: false, error: 'Too many attempts — wait 5 minutes.' });
+  }
+  // Reuse the live code rather than reprinting a new one on every page load.
+  if (setupGate.otp && Date.now() < setupGate.otpExp && Date.now() - lastOtpBegin < 30_000) {
+    return res.json({ ok: true, expiresAt: setupGate.otpExp });
+  }
+  lastOtpBegin = Date.now();
+  res.json({ ok: true, expiresAt: beginOtp() });
+});
 // Phone submits the code it read off the TV -> gets an unlock token.
 app.post('/api/setup/otp/verify', (req, res) => {
+  const ip = peerIp(req);
+  if (otpLimited(ip)) {
+    return res.status(429).json({ ok: false, error: 'Too many attempts — wait 5 minutes.' });
+  }
   const token = verifyOtp((req.body || {}).code);
-  if (!token) return res.status(401).json({ ok: false, error: 'Wrong or expired code — check the TV.' });
+  if (!token) {
+    otpRecordFail(ip);
+    return res.status(401).json({ ok: false, error: 'Wrong or expired code — check the TV.' });
+  }
+  otpFails.delete(ip);
   res.json({ ok: true, token });
 });
 // TV-ONLY: the dashboard (on loopback) reads the active code to display it. The
@@ -607,7 +678,10 @@ app.post('/api/remote/start', requireSetupAuth, async (_req, res) => {
 });
 
 // Latest screen frame as raw PNG (with 304 caching).
-app.get('/api/remote/frame', (req, res) => {
+// Gated: these frames are a live video of a real Spotify sign-in, password
+// keystrokes included, and the page they belong to is served over the public
+// tunnel. Same lock as every other setup change.
+app.get('/api/remote/frame', requireSetupAuth, (req, res) => {
   const since = req.query.since || req.headers['if-none-match']?.replace(/"/g, '');
   const frame = getFrame(since);
   if (!frame) return res.status(204).end();
@@ -620,13 +694,15 @@ app.get('/api/remote/frame', (req, res) => {
   }).send(frame.buffer);
 });
 
-app.post('/api/remote/input', async (req, res) => {
+// Gated: this injects mouse and keystrokes into a real Chrome running on the
+// host. Unauthenticated, it is remote control of the machine, not of a form.
+app.post('/api/remote/input', requireSetupAuth, async (req, res) => {
   await sendInput(req.body || {});
   res.json({ ok: true });
 });
 
-app.get('/api/remote/status', (_req, res) => res.json(remoteState()));
-app.post('/api/remote/stop', async (_req, res) => { await stopRemote(); res.json({ ok: true }); });
+app.get('/api/remote/status', requireSetupAuth, (_req, res) => res.json(remoteState()));
+app.post('/api/remote/stop', requireSetupAuth, async (_req, res) => { await stopRemote(); res.json({ ok: true }); });
 
 // Kick off the OAuth dance. The redirect URI is derived from whatever origin
 // the user opened the page on (phone https / desktop 127.0.0.1) so the
@@ -672,8 +748,17 @@ wss.on('connection', (ws) => {
 function attachWsUpgrade(server) {
   server.on('upgrade', (request, socket, head) => {
     try {
-      const { pathname } = new URL(request.url, 'http://localhost');
+      const { pathname, searchParams } = new URL(request.url, 'http://localhost');
       if (pathname === '/ws/remote') {
+        // The socket carries the same screen frames and accepts the same input
+        // events as the HTTP routes above, so it needs the same lock. A browser
+        // cannot set headers on a WebSocket, so the unlock token rides in the
+        // query string; the TV itself (loopback) still needs nothing.
+        if (!isLoopback(request) && !tokenValid(searchParams.get('token'))) {
+          socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+          socket.destroy();
+          return;
+        }
         wss.handleUpgrade(request, socket, head, (ws) => {
           wss.emit('connection', ws, request);
         });

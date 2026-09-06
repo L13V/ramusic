@@ -18,14 +18,19 @@ KIOSK_PROFILE="$PWD/.data/kiosk"
 # server has a moment to come up. Runs in the background; stop.sh closes it.
 (
   sleep 5
-  COMMON="--new-window --kiosk --user-data-dir=$KIOSK_PROFILE --autoplay-policy=no-user-gesture-required $URL"
+  # An array, not a string: the profile path is under the repo, and splitting an
+  # unquoted "$COMMON" tore --user-data-dir in half for anyone whose checkout
+  # lives in a directory with a space in it.
+  COMMON=(--new-window --kiosk "--user-data-dir=$KIOSK_PROFILE"
+          --autoplay-policy=no-user-gesture-required "$URL")
   if [ "$(uname)" = "Darwin" ]; then
-    open -na "Google Chrome" --args $COMMON 2>/dev/null \
-      || open -na "Microsoft Edge" --args $COMMON 2>/dev/null \
-      || open -na "Brave Browser" --args $COMMON 2>/dev/null
+    open -na "Google Chrome" --args "${COMMON[@]}" 2>/dev/null \
+      || open -na "Microsoft Edge" --args "${COMMON[@]}" 2>/dev/null \
+      || open -na "Brave Browser" --args "${COMMON[@]}" 2>/dev/null
   else
+    # Google Chrome first: it ships Widevine, so the Web Playback SDK can play.
     for B in google-chrome google-chrome-stable chromium chromium-browser brave-browser microsoft-edge; do
-      if command -v "$B" >/dev/null 2>&1; then "$B" $COMMON >/dev/null 2>&1 & break; fi
+      if command -v "$B" >/dev/null 2>&1; then "$B" "${COMMON[@]}" >/dev/null 2>&1 & break; fi
     done
   fi
 ) &

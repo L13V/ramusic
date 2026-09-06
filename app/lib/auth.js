@@ -14,7 +14,7 @@
 // Values entered in the setup UI are stored in .data/auth.json and take
 // precedence over .env; .env acts as a seed / fallback.
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, chmodSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { createHash, randomBytes } from 'crypto';
@@ -55,19 +55,29 @@ export function saveStore(patch) {
   const next = { ...loadStore(), ...patch };
   // Drop empty-string keys so "clearing" a field actually clears it.
   for (const k of Object.keys(next)) if (next[k] === '' || next[k] == null) delete next[k];
-  mkdirSync(DATA_DIR, { recursive: true });
-  writeFileSync(STORE_FILE, JSON.stringify(next, null, 2));
+  mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
+  // This file holds the refresh token and the sp_dc cookie, and the README is
+  // explicit that sp_dc is password-equivalent. Owner-only, and re-applied on
+  // every write so a store created before this stops being world-readable.
+  writeFileSync(STORE_FILE, JSON.stringify(next, null, 2), { mode: 0o600 });
+  try { chmodSync(STORE_FILE, 0o600); } catch { /* not POSIX */ }
   storeCache = next;
   return next;
 }
 
-/** Merged credentials: setup-UI values (store) win, .env is the fallback. */
+/** Merged credentials: setup-UI values (store) win, .env is the fallback.
+ *
+ * `disconnectedAt` is the one thing that outranks .env. Without it, signing out
+ * (or a token Spotify revoked) only cleared the store and the SPOTIFY_REFRESH_TOKEN
+ * seed came straight back — so Disconnect did nothing visible, and a revoked
+ * grant retried forever instead of falling back to the setup screen. */
 export function getCreds(env) {
   const s = loadStore();
+  const envRefresh = s.disconnectedAt ? null : (env.SPOTIFY_REFRESH_TOKEN || null);
   return {
     clientId: s.clientId || env.SPOTIFY_CLIENT_ID || null,
     clientSecret: s.clientSecret || env.SPOTIFY_CLIENT_SECRET || null,
-    refreshToken: s.refreshToken || env.SPOTIFY_REFRESH_TOKEN || null,
+    refreshToken: s.refreshToken || envRefresh,
     spDc: s.spDc || env.SPOTIFY_SP_DC || null,
   };
 }
@@ -152,7 +162,7 @@ export async function exchangeCode(env, { code, state }) {
   });
   const j = await tokenRequest(env, body);
   if (!j.refresh_token) throw new Error('Spotify returned no refresh token.');
-  saveStore({ refreshToken: j.refresh_token, connectedAt: new Date().toISOString() });
+  saveStore({ refreshToken: j.refresh_token, connectedAt: new Date().toISOString(), disconnectedAt: null });
   access = { value: j.access_token, exp: Date.now() + (j.expires_in || 3600) * 1000 };
   profileCache = null;
   return j;
@@ -176,7 +186,9 @@ export async function getAccessToken(env) {
     // Revoked / invalid grant -> forget the stored token so the TV flips back
     // to the "Scan to set up" screen instead of silently showing nothing.
     if (e.code === 'invalid_grant') {
-      saveStore({ refreshToken: null });
+      // Mark the disconnect so a stale SPOTIFY_REFRESH_TOKEN in .env cannot
+      // resurrect the dead grant on the very next call.
+      saveStore({ refreshToken: null, disconnectedAt: new Date().toISOString() });
       profileCache = null;
     }
     throw e;
@@ -188,7 +200,7 @@ export async function getAccessToken(env) {
 
 /** Forget the sign-in (keeps client id/secret so re-connecting is one tap). */
 export function disconnect() {
-  saveStore({ refreshToken: null, connectedAt: null });
+  saveStore({ refreshToken: null, connectedAt: null, disconnectedAt: new Date().toISOString() });
   access = { value: null, exp: 0 };
   profileCache = null;
 }
@@ -242,14 +254,19 @@ export function lanIp() {
  * warning the first time.
  */
 export async function getTls() {
+  const ip = lanIp();
   if (existsSync(TLS_FILE)) {
     try {
       const t = JSON.parse(readFileSync(TLS_FILE, 'utf8'));
-      if (t.key && t.cert) return t;
+      // The LAN IP is baked into the cert's subjectAltName, so a DHCP lease
+      // change silently invalidates it — the phone then gets a cert for an
+      // address that is no longer ours and the setup flow dead-ends. Reissue
+      // whenever the address we would sign for has moved. (Certs written before
+      // this carry no `ip`, so they are reissued once, then cached as normal.)
+      if (t.key && t.cert && t.ip === ip) return t;
     } catch { /* regenerate below */ }
   }
   const { default: selfsigned } = await import('selfsigned');
-  const ip = lanIp();
   const pems = await selfsigned.generate(
     [{ name: 'commonName', value: 'spotify-tv-jam' }],
     {
@@ -267,8 +284,10 @@ export async function getTls() {
       ],
     }
   );
-  const t = { key: pems.private, cert: pems.cert };
-  mkdirSync(DATA_DIR, { recursive: true });
-  writeFileSync(TLS_FILE, JSON.stringify(t, null, 2));
+  const t = { key: pems.private, cert: pems.cert, ip };
+  mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
+  // Contains the private key — owner-only, same as the credential store.
+  writeFileSync(TLS_FILE, JSON.stringify(t, null, 2), { mode: 0o600 });
+  try { chmodSync(TLS_FILE, 0o600); } catch { /* not POSIX */ }
   return t;
 }

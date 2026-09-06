@@ -48,9 +48,21 @@ fi
 
 # The Pi plays via librespot, not the browser SDK — turn the SDK off so no dead
 # "Play on this TV" button appears. (WEBPLAYER_NAME stays as the device name.)
-if [ -f "$DIR/app/.env" ] && grep -q '^WEBPLAYER=' "$DIR/app/.env"; then
+#
+# This has to CREATE the setting, not just rewrite an existing one: the old
+# guard required .env to already exist and already contain a WEBPLAYER= line,
+# which on a fresh clone (where there is only .env.example) is never true — so
+# the code default of WEBPLAYER=true stood and the dead button appeared anyway.
+touch "$DIR/app/.env"
+if grep -q '^WEBPLAYER=' "$DIR/app/.env"; then
   sed -i 's/^WEBPLAYER=.*/WEBPLAYER=false/' "$DIR/app/.env"
+else
+  printf '\n# ARM board: audio goes through librespot, not the browser SDK.\nWEBPLAYER=false\n' >> "$DIR/app/.env"
 fi
+if ! grep -q '^WEBPLAYER_NAME=' "$DIR/app/.env"; then
+  printf 'WEBPLAYER_NAME=RAMTECH TV\n' >> "$DIR/app/.env"
+fi
+chown "$USER_NAME":"$USER_NAME" "$DIR/app/.env" 2>/dev/null || true
 
 # ── 3. Server as a systemd service (auto-starts, auto-restarts) ──
 NODE_BIN="$(command -v node)"

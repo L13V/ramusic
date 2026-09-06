@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # RAMTECH OTA installer.
-#   ramtech-ota-apply.sh <tarball-url> <version>   install a release
+#   ramtech-ota-apply.sh <tarball-url> <version> [--sha256-url <url>]
+#                                                  install a release
 #   ramtech-ota-apply.sh --rollback                return to the previous release
 #
 # Launched detached (systemd-run --unit=ramtech-ota) by the admin service so it
@@ -92,10 +93,27 @@ if [ "${1:-}" = "--rollback" ]; then
 fi
 
 # ── Install mode ─────────────────────────────────────────────
-URL="${1:-}"; VER="${2:-}"
+URL="${1:-}"; VER="${2:-}"; shift 2 2>/dev/null || true
+SHA_URL=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --sha256-url) SHA_URL="${2:-}"; shift 2;;
+    *) shift;;
+  esac
+done
 if [ -z "$URL" ] || [ -z "$VER" ]; then
-  set_status failed "" "usage: ramtech-ota-apply.sh <url> <version>"; exit 2
+  set_status failed "" "usage: ramtech-ota-apply.sh <url> <version> [--sha256-url <url>]"; exit 2
 fi
+# $VER becomes a directory name that this script later rm -rf's, as root. It
+# arrives from a GitHub release tag, so it is only as trustworthy as whatever
+# repo the device is pointed at: accept a plain vX.Y.Z and nothing else.
+case "$VER" in
+  v[0-9]*.[0-9]*.[0-9]*|[0-9]*.[0-9]*.[0-9]*) ;;
+  *) set_status failed "" "Refusing release tag \"$VER\" — expected a plain vX.Y.Z."; exit 2;;
+esac
+case "$VER" in
+  */*|*..*) set_status failed "" "Refusing release tag \"$VER\" — path separators are not allowed."; exit 2;;
+esac
 DEST_REL="releases/$VER"
 DEST="$ROOT/$DEST_REL"
 
@@ -103,6 +121,21 @@ set_status downloading "$VER"
 TARBALL="$ROOT/ota/download.tar.gz"
 if ! curl -fL --retry 3 -m 600 -o "$TARBALL" "$URL"; then
   set_status failed "$VER" "Download failed."; exit 1
+fi
+
+# Verify before unpacking: everything below runs this archive's code as root.
+if [ -n "$SHA_URL" ]; then
+  set_status verifying "$VER"
+  EXPECTED="$(curl -fsS -m 60 "$SHA_URL" 2>/dev/null | awk 'NR==1{print $1}')"
+  if [ -z "$EXPECTED" ]; then
+    rm -f "$TARBALL"; set_status failed "$VER" "Could not fetch the release checksum."; exit 1
+  fi
+  ACTUAL="$(sha256sum "$TARBALL" | awk '{print $1}')"
+  if [ "$EXPECTED" != "$ACTUAL" ]; then
+    rm -f "$TARBALL"
+    set_status failed "$VER" "Checksum mismatch — refusing to install this download."
+    exit 1
+  fi
 fi
 
 set_status installing "$VER"

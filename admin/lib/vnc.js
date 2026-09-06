@@ -192,8 +192,9 @@ export function setupVncWebSocket(server) {
       const url = new URL(req.url, 'http://localhost');
       if (url.pathname !== '/ws/vnc') return;
 
-      // Authentication check for VNC access
-      if (!auth.isAuthed(req)) {
+      // Same gate as the HTTP API: a valid session, and not one riding the
+      // shipped default password.
+      if (!auth.isAuthed(req) || auth.mustChange()) {
         socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
         socket.destroy();
         return;
@@ -214,14 +215,20 @@ export function setupVncWebSocket(server) {
       idleTimer = null;
     }
 
+    let earlyReleased = false;
+    const releaseEarly = () => {
+      if (earlyReleased) return;
+      earlyReleased = true;
+      clientCount = Math.max(0, clientCount - 1);
+    };
+
     if (MOCK) {
       // Inform client that mock mode is active
       try {
         ws.send(JSON.stringify({ type: 'mock', message: 'VNC running in mock mode on Windows/development' }));
       } catch {}
-      ws.on('close', () => {
-        clientCount = Math.max(0, clientCount - 1);
-      });
+      ws.on('close', releaseEarly);
+      ws.on('error', releaseEarly);
       return;
     }
 
@@ -231,15 +238,23 @@ export function setupVncWebSocket(server) {
         ws.send(JSON.stringify({ type: 'error', error: vncRes.error }));
         ws.close(1011, vncRes.error.slice(0, 120));
       } catch {}
-      clientCount = Math.max(0, clientCount - 1);
+      releaseEarly();
       return;
     }
 
     const tcpSocket = net.createConnection({ port: VNC_PORT, host: '127.0.0.1' });
 
+    // Four events race to call this (ws close/error, tcp close/error) and a
+    // normal disconnect fires at least two of them. Decrementing per call
+    // subtracted one viewer several times over: with two people connected, one
+    // leaving took the count to zero and the idle timer then killed x11vnc out
+    // from under the other. Count the connection once, release it once.
+    let released = false;
     const cleanup = () => {
       try { tcpSocket.destroy(); } catch {}
       try { ws.close(); } catch {}
+      if (released) return;
+      released = true;
       clientCount = Math.max(0, clientCount - 1);
       if (clientCount === 0) {
         idleTimer = setTimeout(() => {

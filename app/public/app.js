@@ -54,13 +54,17 @@ const fmt = (ms) => {
   const s = Math.floor((ms || 0) / 1000);
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 };
-const initials = (name) => (name || '?').trim().slice(0, 1).toUpperCase();
+// Escaped at the source: every caller drops the result straight into innerHTML.
+const initials = (name) => escapeHtml((name || '?').trim().slice(0, 1).toUpperCase());
+// URLs land in src="…" attributes, so they need escaping too — a stray quote in
+// a third-party URL would otherwise close the attribute and start a new one.
+const attr = (url) => escapeHtml(String(url || ''));
 
 function paintWeather(w) {
   if (!w || w.error) { $('w-temp').textContent = '--°'; $('w-meta').textContent = w?.error ? '' : '—'; return; }
   $('w-ic').textContent = w.icon;
   $('w-temp').textContent = `${w.temp}°${w.unit}`;
-  $('w-meta').innerHTML = `${w.label}<br>${w.city} · H${w.hi}° L${w.lo}°`;
+  $('w-meta').innerHTML = `${escapeHtml(w.label)}<br>${escapeHtml(w.city)} · H${w.hi}° L${w.lo}°`;
 }
 
 function paintNow(s) {
@@ -145,7 +149,7 @@ function paintQueue(q) {
       ? `<div class="q-by"><span class="av" style="display:grid;place-items:center;font-size:11px;font-weight:700">${initials(t.addedBy)}</span>${escapeHtml(t.addedBy)}</div>`
       : '';
     li.innerHTML = `
-      <img class="q-art" src="${t.image || ''}" alt="" onerror="this.style.visibility='hidden'"/>
+      <img class="q-art" src="${attr(t.image)}" alt="" onerror="this.style.visibility='hidden'"/>
       <div class="q-txt">
         <div class="q-name">${escapeHtml(t.name)}</div>
         <div class="q-art-name">${escapeHtml(t.artists)}</div>
@@ -168,7 +172,7 @@ function paintJam(j) {
     const el = document.createElement('div');
     el.className = 'm' + (m.isOwner ? ' owner' : '');
     const av = m.image
-      ? `<img src="${m.image}" alt=""/>`
+      ? `<img src="${attr(m.image)}" alt=""/>`
       : `<span class="m-av">${initials(m.name)}</span>`;
     el.innerHTML = `${av}<span>${escapeHtml(m.name)}</span>`;
     mem.appendChild(el);

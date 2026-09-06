@@ -128,7 +128,8 @@ pre{background:#07090c;border:1px solid var(--brd);border-radius:10px;padding:14
 <main>
 
   <div id="pwWarn" class="card hidden" style="border-color:var(--warn)">
-    ⚠ You're using the default password — <b>change it below</b> (System panel).
+    ⚠ You're still on the default password. Everything else is locked until
+    you <b>change it below</b> (System panel).
   </div>
 
   <div class="card">
@@ -189,6 +190,7 @@ pre{background:#07090c;border:1px solid var(--brd);border-radius:10px;padding:14
         <div class="toggle on" id="dohTgl" onclick="toggleDoh()"><i></i></div>
       </div>
       <div id="dohStatusBadge" class="badge up" style="display:inline-block;margin:6px 0 10px">Active · 127.0.0.1:53</div>
+      <div id="dohError" class="msg err hidden" style="margin:0 0 10px"></div>
       <div class="field" style="margin-top:4px">
         <label>Upstream DoH Provider URL</label>
         <div class="inline">
@@ -389,7 +391,10 @@ async function doLogin() {
     if (!r.ok) { $('loginMsg').textContent = r.error || 'Failed'; return; }
     $('pw').value = '';
     $('pwWarn').classList.toggle('hidden', !r.mustChange);
-    show(true); boot();
+    show(true);
+    // Every other route is refused until the default password is replaced, so
+    // don't start the pollers just to collect 403s.
+    if (!r.mustChange) boot();
   } catch (e) {
     // Never fail silently — a dead server or a crashed handler must say so.
     $('loginMsg').textContent = e.message === 'auth' ? 'Sign-in rejected.' : `Sign-in failed: ${e.message}`;
@@ -576,7 +581,14 @@ async function changePw() {
   const r = await post('/password', { current: $('pwCur').value, next: $('pwNew').value });
   $('pwMsg').className = 'msg ' + (r.ok ? 'ok' : 'err');
   $('pwMsg').textContent = r.ok ? 'Password changed.' : r.error;
-  if (r.ok) { $('pwCur').value = $('pwNew').value = ''; $('pwWarn').classList.add('hidden'); }
+  if (r.ok) {
+    $('pwCur').value = $('pwNew').value = '';
+    $('pwWarn').classList.add('hidden');
+    // Changing the password rotates the session secret server-side, so this
+    // cookie is now void: sign in again to get one signed with the new key.
+    $('pwMsg').textContent = 'Password changed — sign in again.';
+    setTimeout(async () => { await post('/logout').catch(() => {}); show(false); }, 1200);
+  }
 }
 async function power(a) {
   if (!confirm(a === 'reboot' ? 'Reboot the device?' : 'Shut the device down?')) return;
@@ -597,7 +609,16 @@ let currentSinks = [];
 async function refreshAudio() {
   try {
     const r = await api('/audio');
-    if (!r.ok) return;
+    if (!r.ok) {
+      // The server no longer invents plausible-looking sinks when pactl fails,
+      // so say what went wrong instead of leaving the panel silently blank.
+      currentSinks = [];
+      $('audioOutputs').innerHTML = '';
+      $('audioMsg').className = 'msg err';
+      $('audioMsg').textContent = r.error || 'No audio outputs available.';
+      return;
+    }
+    $('audioMsg').textContent = '';
     currentDefaultSink = r.defaultSink || '';
     currentSinks = r.sinks || [];
     $('audioOutputs').innerHTML = currentSinks.map(s => {
@@ -667,13 +688,25 @@ async function refreshDns() {
     $('dohTgl').classList.toggle('on', dohEnabled);
     $('dohUpstream').value = s.upstream || 'https://dns.quad9.com/dns-query';
     const badge = $('dohStatusBadge');
-    if (s.enabled) {
-      badge.textContent = s.active ? 'Active · 127.0.0.1:53' : 'Starting…';
-      badge.className = 'badge up';
-    } else {
+    if (!s.enabled) {
       badge.textContent = 'Disabled (Using DHCP DNS)';
       badge.className = 'badge';
+    } else if (s.systemDns) {
+      badge.textContent = 'Active · 127.0.0.1:53';
+      badge.className = 'badge up';
+    } else if (s.active) {
+      // Listening, but the upstream has not answered yet, so system DNS has
+      // deliberately not been handed over. Say that rather than claiming
+      // "Active" while the box is really still on its DHCP resolver.
+      badge.textContent = s.lastError ? 'Upstream unreachable · system DNS unchanged' : 'Verifying upstream…';
+      badge.className = 'badge';
+    } else {
+      badge.textContent = 'Starting…';
+      badge.className = 'badge';
     }
+    const err = $('dohError');
+    err.textContent = s.lastError || '';
+    err.classList.toggle('hidden', !s.lastError);
     updatePresetHighlight(s.upstream);
   } catch {}
 }
@@ -1044,7 +1077,10 @@ function boot() {
 (async () => {
   const s = await fetch('/api/session').then(r => r.json()).catch(() => ({}));
   show(!!s.authed);
-  if (s.authed) { $('pwWarn').classList.toggle('hidden', !s.mustChange); boot(); }
+  if (s.authed) {
+    $('pwWarn').classList.toggle('hidden', !s.mustChange);
+    if (!s.mustChange) boot();
+  }
 })();
 </script>
 </body>

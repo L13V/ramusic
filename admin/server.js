@@ -39,8 +39,10 @@ app.get('/api/session', (req, res) =>
 app.post('/api/password', (req, res, next) => auth.requireAuth(req, res, next),
   (req, res) => res.json(auth.changePassword(req.body?.current, req.body?.next)));
 
-// Everything below requires a session.
+// Everything below requires a session AND a password that is no longer the
+// shipped default — the change is forced, so it has to actually be enforced.
 app.use('/api', (req, res, next) => auth.requireAuth(req, res, next));
+app.use('/api', (req, res, next) => auth.requirePasswordSet(req, res, next));
 
 const wrap = (fn) => async (req, res) => {
   try { res.json(await fn(req)); }
@@ -93,8 +95,22 @@ app.get('/api/apt/status', wrap(() => sys.jobStatus('apt') || { running: false, 
 app.post('/api/power/:action', wrap((req) => sys.power(req.params.action)));
 
 const server = http.createServer(app);
+const WS_PATHS = ['/ws/vnc', '/ws/terminal'];
 vnc.setupVncWebSocket(server);
 terminal.setupTerminalWebSocket(server);
+
+// Both handlers above ignore paths that aren't theirs, which is the only thing
+// they can do with a sibling listening on the same event — but that left an
+// upgrade to any other path connected and unanswered forever. Registered last,
+// so the real handlers have already had their turn.
+server.on('upgrade', (req, socket) => {
+  try {
+    const { pathname } = new URL(req.url, 'http://localhost');
+    if (WS_PATHS.includes(pathname)) return;   // handled above
+  } catch { /* unparseable: close it */ }
+  socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
+  socket.destroy();
+});
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`RAMTECH admin listening on http://0.0.0.0:${PORT}${sys.MOCK ? '  [MOCK MODE]' : ''}`);

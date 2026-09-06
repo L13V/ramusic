@@ -32,6 +32,21 @@ const VW = 420, VH = 760; // login-form-sized viewport
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/** Kill a spawned browser and everything it forked. Chrome runs a tree of
+ *  renderer/GPU processes; killing only the launcher pid leaves them alive,
+ *  still holding the user-data-dir lock the next launch needs. */
+export function killTree(pid) {
+  if (!pid) return;
+  try {
+    if (process.platform === 'win32') {
+      spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' }).unref();
+    } else {
+      // Negative pid = the process group `detached: true` gave the child.
+      try { process.kill(-pid); } catch { process.kill(pid); }
+    }
+  } catch { /* already gone */ }
+}
+
 // Find a Chromium-family browser we can drive over CDP, on any OS.
 export function findBrowser() {
   const has = (p) => { try { return p && existsSync(p); } catch { return false; } };
@@ -262,6 +277,7 @@ export async function startRemote({ startUrl, onCapture, isOauthDone, wantSpDc =
     args.push(startUrl || LOGIN_URL);
     const c = spawn(browser, args, { detached: true, stdio: 'ignore' });
     c.on('error', () => {});
+    c.unref();   // detached without unref() still pins our event loop
     return c;
   };
 
@@ -298,7 +314,7 @@ export async function startRemote({ startUrl, onCapture, isOauthDone, wantSpDc =
   if (!wsUrl && hasDisplay && process.platform === 'linux') {
     // DISPLAY was set but the browser never came up (X dead / container) —
     // retry headless on a fresh port before giving up.
-    try { if (child.pid) process.kill(child.pid); } catch {}
+    killTree(child.pid);
     dbgPort = await freePort();
     child = launch(dbgPort, true);
     if (session) session.child = child;
@@ -504,5 +520,5 @@ export async function stopRemote() {
   } catch {}
   try { s.conn?.close(); } catch {}
   try { s.browserConn?.close(); } catch {}
-  try { if (s.child?.pid) process.kill(s.child.pid); } catch {}
+  killTree(s.child?.pid);
 }

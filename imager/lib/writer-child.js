@@ -219,7 +219,13 @@ function unmount(dest) {
     execFileSync('diskutil', ['unmountDisk', 'force', dest], { stdio: 'ignore' });
   } else {
     // Best effort: a stick with nothing mounted makes umount fail, harmlessly.
-    try { execFileSync('sh', ['-c', `umount ${dest}?* 2>/dev/null || true`], { stdio: 'ignore' }); } catch {}
+    // The glob needs a shell, but the device path goes in as a positional
+    // parameter rather than spliced into the script text — this runs as root,
+    // so `dest` must never be able to become shell syntax.
+    try {
+      execFileSync('sh', ['-c', 'for p in "$1"?*; do umount "$p" 2>/dev/null || true; done', 'sh', dest],
+        { stdio: 'ignore' });
+    } catch {}
   }
 }
 

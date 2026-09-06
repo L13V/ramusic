@@ -66,6 +66,7 @@ jobs:
         run: |
           sudo apt-get install -y shellcheck >/dev/null
           shellcheck -S warning os/overlay/bin/*.sh os/*.sh app/deploy/kiosk.sh
+          shellcheck -S warning deploy/install.sh start.sh stop.sh
           shellcheck -S warning -s bash os/live/hooks/normal/*.hook.chroot
 
       - name: Build tarball
@@ -85,14 +86,20 @@ jobs:
           # Never ship local state or secrets.
           rm -rf "$STAGE/app/.data" "$STAGE/app/.env"
           tar -czf "ramtech-app-$TAG.tar.gz" -C "$STAGE" app admin bin VERSION
+          # Devices verify the download against this before unpacking it as
+          # root, the same way the imager verifies the OS image.
+          sha256sum "ramtech-app-$TAG.tar.gz" > "ramtech-app-$TAG.tar.gz.sha256"
           tar -tzf "ramtech-app-$TAG.tar.gz" | head -5
+          cat "ramtech-app-$TAG.tar.gz.sha256"
 
       - name: Create the draft release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.TAG }}
           draft: true
-          files: ramtech-app-*.tar.gz
+          files: |
+            ramtech-app-*.tar.gz
+            ramtech-app-*.tar.gz.sha256
           generate_release_notes: true
 
       # The image job seeds this into the overlay instead of downloading it:

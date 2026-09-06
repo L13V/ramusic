@@ -41,7 +41,16 @@ ipcMain.handle('app:relaunch-elevated', () => {
   setTimeout(() => app.quit(), 500);
 });
 
-ipcMain.handle('app:open-external', (_e, url) => shell.openExternal(url));
+// Only http(s). shell.openExternal hands the string to the OS handler, which
+// will happily act on file:, and on Windows on any registered protocol — so an
+// unfiltered pass-through is an "open anything" primitive.
+ipcMain.handle('app:open-external', (_e, url) => {
+  let u;
+  try { u = new URL(String(url)); } catch { return false; }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+  shell.openExternal(u.href);
+  return true;
+});
 ipcMain.handle('app:show-item', (_e, targetPath) => {
   if (targetPath) shell.showItemInFolder(targetPath);
   return true;
@@ -117,6 +126,14 @@ ipcMain.handle('drives:list', async () => {
 ipcMain.handle('write:start', async (_e, { src, dest, verify }) => {
   if (writing) throw new Error('A write is already running.');
   if (!fs.existsSync(src)) throw new Error('The image file has gone missing.');
+  // Re-enumerate and confirm the target is still one of the removable drives we
+  // offered. The renderer picked it from that same list, but this process is
+  // the one holding Administrator/root and erasing whatever it is handed — so
+  // it checks for itself rather than trusting the value it was sent back.
+  const candidates = await drives.list();
+  if (!candidates.some((d) => d.id === dest)) {
+    throw new Error('That drive is no longer in the list of removable USB devices. Re-scan and pick it again.');
+  }
   if (process.platform === 'win32' && !elevate.isElevated()) {
     throw new Error('This window is not running as Administrator. Close the imager, right-click it and choose "Run as administrator", then try again.');
   }

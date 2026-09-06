@@ -114,6 +114,11 @@ function startWriter({ src, dest, verify }) {
   return { progress, child };
 }
 
-function shq(s) { return `'${String(s).replace(/'/g, `'\''`)}'`; }
+// POSIX single-quote escaping: close the quoted run, emit a literal quote,
+// reopen it — the four characters ' \ ' '. Deliberately a normal string, not a
+// template literal: in a template `\'` collapses to a bare quote, so the old
+// version emitted ''' and produced unbalanced quoting for any path containing
+// an apostrophe ("Dad's stick.img.gz"), breaking every macOS/Linux write.
+function shq(s) { return "'" + String(s).split("'").join("'\\''") + "'"; }
 
 module.exports = { isElevated, relaunchElevated, startWriter, winTool };

@@ -78,8 +78,16 @@ export async function getAudioOutputs() {
     ]);
 
     if (!listRes.ok) {
-      // If pactl is not available on this system, degrade to mock
-      return { ok: true, sinks: mockSinks, defaultSink: mockSinks[0]?.name, mockFallback: true };
+      // Say so rather than showing invented hardware. Handing back mockSinks
+      // here put three plausible, non-existent outputs in the UI whose controls
+      // silently did nothing — a worse failure than an honest error.
+      return {
+        ok: false,
+        sinks: [],
+        defaultSink: null,
+        error: (listRes.stderr || listRes.stdout || '').trim() ||
+          'No audio server reachable (pactl failed). Is PulseAudio/PipeWire running?',
+      };
     }
 
     const defaultSink = (defRes.stdout || '').trim();
@@ -114,7 +122,7 @@ export async function getAudioOutputs() {
 
     return { ok: true, sinks, defaultSink };
   } catch (e) {
-    return { ok: false, error: e.message, sinks: mockSinks, defaultSink: mockSinks[0]?.name };
+    return { ok: false, error: e.message, sinks: [], defaultSink: null };
   }
 }
 

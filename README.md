@@ -19,7 +19,7 @@ Point a browser on your TV at it, full-screen it, done.
 
 ## Want to see it first? (no setup)
 
-Just double-click **`preview.html`**. It opens in any browser and shows the
+Just double-click **`app/preview.html`**. It opens in any browser and shows the
 exact design with fake demo data (needs internet for the demo album art + QR).
 No Node, no Spotify account required. Use this to judge the look.
 
@@ -32,8 +32,11 @@ No Node, no Spotify account required. Use this to judge the look.
 - A Spotify **Premium** account (playback/queue API needs Premium)
 
 ### 1. Install & run
+The app lives in `app/`, so that is where npm runs (there is no package.json at
+the repo root — `start.bat` / `start.sh` just cd into it for you):
+
 ```bash
-cd spotify-tv-jam
+cd app
 npm install
 npm start
 ```
@@ -56,8 +59,7 @@ and follow the steps on the page that opens:
    bounce straight back. The server exchanges and stores the tokens itself
    (`.data/auth.json`) and keeps itself signed in from then on — no curl,
    no copying tokens.
-3. The TV flips to the dashboard automatically. The public tunnel closes
-   itself a couple of minutes later — your dashboard is never left exposed.
+3. The TV flips to the dashboard automatically.
 
 You can revisit the setup page any time at `http://127.0.0.1:3000/setup` on
 the machine itself (or `https://<your-ip>:3443/setup` on the LAN) to
@@ -65,9 +67,23 @@ reconnect, disconnect, or add the Jam cookie.
 
 > **Notes on the tunnel:** the localtunnel URL is random on every server
 > start, so the redirect URI you register is the one shown *at that moment* —
-> that's fine, setup is a one-time thing. Anyone who guesses the random URL
-> during setup could see the (not-yet-signed-in) setup page; it auto-closes
-> after sign-in. Set `TUNNEL=false` in `.env` to disable tunnels entirely.
+> that's fine, setup is a one-time thing. Set `TUNNEL=false` in `.env` to
+> disable tunnels entirely.
+>
+> **The tunnel stays up for the whole session** — it is not just a setup
+> device. It is the address the Jam QR points at, which is what lets a guest
+> scan from mobile data instead of having to be on your Wi-Fi. So treat the
+> `loca.lt` URL as public, and note what is and is not reachable through it:
+>
+> | Over the public tunnel | Only from the TV / your LAN |
+> | --- | --- |
+> | the dashboard view and `/api/state` | the Spotify access token (`/api/token`) |
+> | `/setup`, read-only | play / pause / skip / volume |
+> | the `/j` Jam redirect | the remote sign-in screen-share and its input |
+>
+> *Changing* anything on `/setup` — and viewing or driving the remote sign-in —
+> needs the 6-digit code shown only on the TV, so you have to be able to see the
+> screen. Five wrong codes locks that address out for five minutes.
 >
 > **Without the tunnel** (offline, or `TUNNEL=false`): the QR falls back to
 > the server's self-signed HTTPS listener (`https://<your-ip>:3443/setup`).
@@ -192,12 +208,14 @@ sudo reboot
 Logs: `journalctl -u spotify-tv-jam -f`. It runs **entirely on the box** — the
 localtunnel is only the public address the Jam QR points at.
 
-**Branding:** drop your logo at `public/ramtech-logo.png`.
+**Branding:** drop your logo at `app/public/ramtech-logo.png`.
 
 **Locked-down setup:** because the tunnel makes `/setup` public, *changing* anything
 requires a **6-digit code shown only on the TV** (loopback-only). View the page from
 anywhere; you can only edit it if you can see the screen. Requests from the Pi itself
-skip the code.
+skip the code. Five wrong codes lock that address out for five minutes. The same code
+gates the remote sign-in screen-share, and playback control plus the Spotify token are
+never served over the tunnel at all — only to the TV and the local network.
 
 **Audio:** ARM Chromium can't do Spotify's DRM web player, so `install.sh` sets the
 box up to play through **librespot** (installed as `raspotify`) — a headless Spotify
@@ -304,8 +322,12 @@ Console login (plug in a keyboard, Ctrl+Alt+F2): `ramtech` / `ramtech`. Root is
 locked. Anyone holding the stick owns it — treat it like a key, not a password.
 
 ## Device manager (port 8080)
-`http://ramtech.local:8080` — default password **`ramtech`** (a change is
-forced on first login). Status/temps, service control, journals, Wi-Fi,
+`http://ramtech.local:8080` — default password **`ramtech`**, and the change is
+genuinely forced: while the password is still the default, every other route
+(including the console terminal and the VNC screen) is refused, so the only
+thing a fresh device will let you do is set a real password. Changing it also
+invalidates any session signed under the old one, so you sign in again after.
+Status/temps, service control, journals, Wi-Fi,
 hostname, apt upgrades, reboot — and **Software update**: checks this repo's
 GitHub Releases, installs atomically, health-checks the app and **rolls back
 automatically** if the new version doesn't come up. Optional daily auto-update

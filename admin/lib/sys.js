@@ -15,9 +15,15 @@ export const ROOT = process.env.RAMTECH_ROOT || '/opt/ramtech';
 export const UNITS = ['spotify-tv-jam', 'ramtech-admin', 'raspotify'];
 const ACTIONS = ['start', 'stop', 'restart'];
 
-export function run(cmd, args = [], { timeout = 30_000 } = {}) {
+export function run(cmd, args = [], { timeout = 30_000, env, cwd } = {}) {
+  // `env` and `cwd` are forwarded, not swallowed: audio.js resolves
+  // XDG_RUNTIME_DIR/PULSE_SERVER so pactl can find the session bus when the
+  // admin runs as root, and dropping them here quietly threw all that away.
+  const opts = { timeout, maxBuffer: 4 * 1024 * 1024 };
+  if (env) opts.env = env;
+  if (cwd) opts.cwd = cwd;
   return new Promise((resolve) => {
-    execFile(cmd, args, { timeout, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) =>
+    execFile(cmd, args, opts, (err, stdout, stderr) =>
       resolve({ ok: !err, code: err?.code ?? 0, stdout: String(stdout || ''), stderr: String(stderr || '') }));
   });
 }

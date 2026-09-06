@@ -75,7 +75,9 @@ export function setupTerminalWebSocket(server) {
       const url = new URL(req.url, 'http://localhost');
       if (url.pathname !== '/ws/terminal') return;
 
-      if (!auth.isAuthed(req)) {
+      // Same gate as the HTTP API: a valid session, and not one riding the
+      // shipped default password.
+      if (!auth.isAuthed(req) || auth.mustChange()) {
         socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
         socket.destroy();
         return;

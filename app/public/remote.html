@@ -69,6 +69,12 @@ async function api(path, body) {
   const r = await fetch(path, { method: 'POST', headers, body: JSON.stringify(body || {}) });
   return r.json().catch(() => ({}));
 }
+// The frame and status routes are locked the same way the POSTs are, so the
+// reads need the token too. (From the TV itself, loopback, it is not needed.)
+const authGet = (path, opts) => fetch(path, {
+  ...opts,
+  headers: { ...((opts || {}).headers || {}), ...(setupToken ? { 'X-Setup-Token': setupToken } : {}) },
+});
 
 function sendInputEvent(input) {
   if (ws && ws.readyState === WebSocket.OPEN) {
@@ -98,7 +104,8 @@ function escapeHtml(s) {
 function connectWebSocket() {
   try {
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const socket = new WebSocket(`${proto}//${location.host}/ws/remote`);
+    const q = setupToken ? `?token=${encodeURIComponent(setupToken)}` : '';
+    const socket = new WebSocket(`${proto}//${location.host}/ws/remote${q}`);
     ws = socket;
     socket.onopen = () => {
       console.log('Remote control WebSocket connected');
@@ -159,7 +166,7 @@ async function pumpFramesHttp() {
   while (!doneFlag) {
     try {
       const url = `/api/remote/frame?since=${lastSeq}`;
-      const r = await fetch(url, { cache: 'no-store' });
+      const r = await authGet(url, { cache: 'no-store' });
       if (r.status === 200) {
         const seq = r.headers.get('X-Frame-Seq');
         if (seq) lastSeq = Number(seq);
@@ -224,7 +231,7 @@ $('enter').addEventListener('click', () => { sendInputEvent({ type: 'key', key: 
 async function pollHttp() {
   while (!doneFlag) {
     try {
-      const r = await fetch('/api/remote/status', { cache: 'no-store' });
+      const r = await authGet('/api/remote/status', { cache: 'no-store' });
       const s = await r.json();
       handleStatus(s);
       if (doneFlag || (!s.active && started)) break;

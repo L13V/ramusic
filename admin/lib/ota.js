@@ -23,10 +23,19 @@ export function saveSettings(patch) {
   return { ok: true, settings: s };
 }
 
+// Anchored at BOTH ends. The old pattern only anchored the start, so a release
+// tagged `v9.9.9/../../../etc` compared as 9.9.9, passed `newer()`, and was then
+// used verbatim as a directory name by the apply script — which does `rm -rf`
+// on that path as root.
+const TAG_RE = /^v?(\d+)\.(\d+)\.(\d+)$/;
+
 function semver(tag) {
-  const m = String(tag || '').match(/^v?(\d+)\.(\d+)\.(\d+)/);
+  const m = String(tag || '').match(TAG_RE);
   return m ? m.slice(1, 4).map(Number) : null;
 }
+
+/** A release tag we are willing to hand to a shell script as a path segment. */
+export function isSafeTag(tag) { return TAG_RE.test(String(tag || '')); }
 export function newer(a, b) { // a > b ?
   const A = semver(a), B = semver(b);
   if (!A || !B) return false;
@@ -53,10 +62,18 @@ export async function check() {
   }
   const asset = (rel.assets || []).find(a => a.name.startsWith(ASSET_PREFIX) && a.name.endsWith('.tar.gz'));
   if (!asset) return { ok: false, error: `Latest release has no ${ASSET_PREFIX}*.tar.gz asset.` };
+  if (!isSafeTag(rel.tag_name)) {
+    return { ok: false, error: `Release tag "${rel.tag_name}" is not a plain vX.Y.Z version — refusing it.` };
+  }
+  // The OS image is checked against a published .sha256; the app tarball was
+  // not checked against anything. Pass the digest through so the apply script
+  // can verify what it downloaded before unpacking it as root.
+  const sum = (rel.assets || []).find(a => a.name === `${asset.name}.sha256`);
   return {
     ok: true, current, latest: rel.tag_name,
     updateAvailable: newer(rel.tag_name, current),
     url: asset.browser_download_url, notes: rel.body || '',
+    sha256Url: sum ? sum.browser_download_url : null,
     publishedAt: rel.published_at,
   };
 }
@@ -91,7 +108,7 @@ export async function apply() {
   if (!c.updateAvailable) return { ok: false, error: `Already up to date (${c.current}).` };
   const cur = otaStatus();
   if (['downloading', 'installing', 'verifying'].includes(cur.state)) return { ok: false, error: 'An update is already running.' };
-  return launch([c.url, c.latest], 'update');
+  return launch([c.url, c.latest, ...(c.sha256Url ? ['--sha256-url', c.sha256Url] : [])], 'update');
 }
 
 export async function rollback() {

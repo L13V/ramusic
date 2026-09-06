@@ -147,9 +147,11 @@ export function stopTunnel() {
 process.on('exit', () => {
   try { tunnelInstance?.close(); } catch {}
 });
+// Close the tunnel on a signal, but do NOT exit here. This module is imported
+// by server.js, so its handler is registered first — calling process.exit()
+// used to end the process before server.js's own handler could remove
+// .data/server.pid, leaving a stale pid behind for stop.bat/stop.sh to chase.
+// Whoever owns the process lifecycle does the exiting.
 for (const sig of ['SIGINT', 'SIGTERM']) {
-  process.on(sig, () => {
-    stopTunnel();
-    process.exit(0);
-  });
+  process.on(sig, () => { stopTunnel(); });
 }

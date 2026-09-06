@@ -10,7 +10,7 @@
 
 import { spawn } from 'child_process';
 import WebSocket from 'ws';
-import { findBrowser, freePort, pageTarget, REMOTE_PROFILE_DIR } from './remote.js';
+import { findBrowser, freePort, pageTarget, killTree, REMOTE_PROFILE_DIR } from './remote.js';
 import { getCreds, saveStore } from './auth.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -85,6 +85,9 @@ async function mint() {
     'about:blank',
   ], { detached: true, stdio: 'ignore' });
   child.on('error', () => {});
+  // detached without unref() still holds a handle on our event loop, which is
+  // the opposite of what detached is for.
+  child.unref();
 
   let conn = null;
   try {
@@ -132,6 +135,6 @@ async function mint() {
     return result.token;
   } finally {
     try { conn?.close(); } catch {}
-    try { if (child.pid) process.kill(child.pid); } catch {}
+    killTree(child.pid);
   }
 }

@@ -10,9 +10,11 @@ for _ in $(seq 1 90); do
   sleep 1
 done
 
-# Find a Chromium-family browser.
+# Find a Chromium-family browser. Google Chrome first: it ships Widevine, so the
+# Spotify Web Playback SDK can play on this machine. Debian's chromium cannot,
+# and picking it on a box that has both silently costs you playback.
 BIN=""
-for c in chromium chromium-browser google-chrome-stable google-chrome; do
+for c in google-chrome-stable google-chrome chromium chromium-browser; do
   if command -v "$c" >/dev/null 2>&1; then BIN="$(command -v "$c")"; break; fi
 done
 [ -z "$BIN" ] && { echo "kiosk: no chromium found"; exit 1; }
