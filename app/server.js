@@ -7,7 +7,7 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { writeFileSync, mkdirSync, rmSync } from 'fs';
 import crypto from 'crypto';
-import { getState, setWebDeviceId, getWebDeviceId, currentJoinUrl } from './lib/spotify.js';
+import { getState, setWebDeviceId, getWebDeviceId, currentJoinUrl, refreshJam } from './lib/spotify.js';
 import { demoState } from './lib/demo.js';
 import { getWeather } from './lib/weather.js';
 import {
@@ -16,7 +16,7 @@ import {
 } from './lib/auth.js';
 import WebSocket, { WebSocketServer } from 'ws';
 if (!globalThis.WebSocket) globalThis.WebSocket = WebSocket;
-import { startTunnel, stopTunnel, tunnelState } from './lib/tunnel.js';
+import { startTunnel, stopTunnel, tunnelState, tunnelPending } from './lib/tunnel.js';
 import { startRemote, stopRemote, getFrame, sendInput, remoteState, addRemoteSubscriber } from './lib/remote.js';
 import { getWebToken as prewarmWebToken } from './lib/webtoken.js';
 
@@ -24,7 +24,6 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const env = process.env;
 const PORT = Number(env.PORT) || 3000;
 const HTTPS_PORT = Number(env.HTTPS_PORT) || PORT + 443; // 3443 by default
-const bootTime = Date.now();
 
 const app = express();
 app.set('trust proxy', true); // reverse proxy / tunnel sits in front during setup
@@ -65,7 +64,12 @@ const clientConfig = () => ({
 // itself stays a plain web client on localhost. Set TUNNEL=false to disable
 // (then the QR falls back to the LAN address, same-Wi-Fi only).
 function ensureTunnel() {
-  if (tunnelEnabled() && !isDemo() && tunnelState().status === 'off') {
+  if (!tunnelEnabled() || isDemo()) return;
+  // Retry on 'error' as well as 'off': a single failed attempt used to wedge the
+  // tunnel for the whole process, which is why the setup QR fell back to the LAN
+  // address permanently. startTunnel() throttles its own retries.
+  const st = tunnelState().status;
+  if (st === 'off' || st === 'error') {
     startTunnel(PORT); // fire and forget; /api/state picks the URL up when ready
   }
 }
@@ -108,12 +112,14 @@ app.get('/api/state', async (_req, res) => {
 
     // Not signed in yet (and not demo) -> tell the TV to show the setup screen.
     if (!isDemo() && !isConfigured(env)) {
-      // While the public link is still being provisioned, tell the TV to show
-      // a "preparing" message instead of a QR that would change seconds later.
-      // Capped at 8s so the TV never hangs permanently if offline or tunnel is slow.
-      const pending = tunnelEnabled() &&
-                      tunnelState().status === 'starting' &&
-                      (Date.now() - bootTime < 8_000);
+      // While the public link is still being provisioned, tell the TV to show a
+      // "preparing" message instead of a QR that would change seconds later.
+      // tunnelPending() is anchored to the tunnel attempt, not process boot: the
+      // tunnel only starts after the TLS cert work in the listen callback, so the
+      // old boot-relative window expired before it had a chance and pinned the
+      // setup QR to the LAN address. It gives up after 30s so an offline TV still
+      // gets a usable local link.
+      const pending = tunnelEnabled() && tunnelPending();
       const url = pending ? null : `${setupOrigin()}/setup`;
       res.json({
         ok: true,
@@ -306,6 +312,8 @@ async function playerStatus() {
 // device so it never touches music playing on your phone/other speakers.
 let zeroGuestsSince = 0;              // debounce: a lookup blip must not pause
 const GUEST_GONE_GRACE_MS = 15_000;   // guests must be gone this long to pause
+let lastScanAt = 0;                   // last time someone scanned the Jam QR
+const SCAN_GRACE_MS = 60_000;         // hold the host armed that long after a scan
 
 async function manageJamPlayback(state) {
   if (isDemo() || !autoPlayOnGuest()) return;
@@ -322,6 +330,11 @@ async function manageJamPlayback(state) {
     jamAuto.started = true;
     return;
   }
+
+  // Someone just scanned to (re)join: joining takes a few seconds to show up in
+  // the member list, and pausing the host in that window is exactly what makes a
+  // returning guest land in a Jam that immediately drops them.
+  if (Date.now() - lastScanAt < SCAN_GRACE_MS) { zeroGuestsSince = 0; return; }
 
   // No guests visible. Session reads flake occasionally (and the member list
   // rides a sticky cache) — require a sustained empty room before pausing.
@@ -397,10 +410,45 @@ app.post('/api/player/control/:action', async (req, res) => {
   }
 });
 
+// Scanning the QR is an explicit "let me (back) in", and two things have to hold
+// for that to work: the session must still exist, and the host must be armed (a
+// Jam whose host isn't playing just tells guests "waiting for the host" — and we
+// deliberately pause once the last guest leaves). The old handler did neither: it
+// handed out lastJam's sticky token, which survives 10 minutes past the session
+// it names, so leaving and re-scanning dead-ended on an ended Jam.
+async function resolveJamLink() {
+  if (isDemo()) return currentJoinUrl();
+  try {
+    let r = await refreshJam(env);          // bypasses the poll cache AND the idle backoff
+    if (r.fresh && r.joinUrl) return r.joinUrl;
+
+    // No live session. Re-arm the TV (active device + a loaded context, still
+    // silent) — that's what lets current_or_new?activate=true mint one again.
+    jamAuto.started = false;
+    const dev = await resolvePlaybackDevice();
+    if (dev) {
+      await ensurePlaying(dev, { arm: true });
+      r = await refreshJam(env);
+      if (r.fresh && r.joinUrl) return r.joinUrl;
+    }
+  } catch { /* fall through to the last link we knew about */ }
+  return currentJoinUrl();
+}
+
 app.get('/j', async (_req, res) => {
-  let url = currentJoinUrl();
-  if (!url) { try { url = (await getState(env)).jam?.joinUrl; } catch {} }
-  res.redirect(url || 'https://open.spotify.com');
+  lastScanAt = Date.now();
+  zeroGuestsSince = 0;
+  ensureTunnel(); // a scan means the public link matters — make sure it's coming up
+  // A phone camera's in-app browser gives up on a slow redirect, so cap the work
+  // and fall back to the last known link rather than hanging.
+  let url = null;
+  try {
+    url = await Promise.race([
+      resolveJamLink(),
+      new Promise((r) => setTimeout(() => r(currentJoinUrl()), 8_000)),
+    ]);
+  } catch { url = currentJoinUrl(); }
+  res.redirect(url || env.JAM_URL_FALLBACK || 'https://open.spotify.com');
 });
 
 // ─────────────────────────────────────────────────────────────

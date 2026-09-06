@@ -47,6 +47,11 @@ const fmt = (b) => {
 
   $('browse').onclick = pickFile;
   $('rebuild').onclick = triggerRebuild;
+  $('build-recheck').onclick = (e) => {
+    if (e) { e.preventDefault(); e.stopPropagation(); }
+    $('build-detail').textContent = 'Checking Docker…';
+    loadBuildStatus();
+  };
   $('refresh').onclick = refreshDrives;
   $('export').onclick = startExport;
   $('export-show').onclick = () => {
@@ -57,7 +62,14 @@ const fmt = (b) => {
   $('again').onclick = () => { $('done').hidden = true; refreshDrives(); };
   $('error-back').onclick = () => { $('error').hidden = true; };
   document.querySelectorAll('input[name=source]').forEach((r) => {
-    r.onchange = () => { syncSource(); updateButtons(); };
+    r.onchange = () => {
+      // The check at load runs before Docker Desktop is necessarily up, and its
+      // answer used to stand for the rest of the session. Picking this option is
+      // the moment it matters, so it is the moment to look again.
+      if (r.value === 'build' && r.checked && !state.build) loadBuildStatus();
+      syncSource();
+      updateButtons();
+    };
   });
 
   window.imager.onDownloadProgress(({ phase, received, total }) => {
@@ -114,18 +126,23 @@ async function loadBuildStatus() {
       state.build = status.local;
       $('build-detail').textContent = `${status.local.name} · ${fmt(status.local.size)} (built locally)`;
       $('rebuild').style.display = 'inline-block';
+      $('build-recheck').style.display = 'none';
     } else if (status.docker && status.docker.available) {
       state.build = null;
       $('build-detail').textContent = 'Ready to build with Docker (~15-30m)';
       $('rebuild').style.display = 'none';
+      $('build-recheck').style.display = 'none';
     } else {
       state.build = null;
-      $('build-detail').textContent = 'Docker Desktop required to build from source';
+      $('build-detail').textContent = (status.docker && status.docker.error)
+        || 'Docker Desktop required to build from source';
       $('rebuild').style.display = 'none';
+      $('build-recheck').style.display = 'inline-block';
     }
   } catch (err) {
     state.build = null;
     $('build-detail').textContent = `Build check: ${err.message}`;
+    $('build-recheck').style.display = 'inline-block';
   }
   syncSource();
   updateButtons();
@@ -336,6 +353,7 @@ function onWriteProgress(p) {
     preparing: 'Preparing the drive…',
     writing: 'Writing to the USB stick…',
     verifying: 'Verifying the USB stick…',
+    flushing: 'Finishing the write…',
   };
   showBusy(titles[p.phase] || 'Working…', frac,
     [`${Math.round(frac * 100)}%`, rate].filter(Boolean).join(' · '));

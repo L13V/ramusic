@@ -44,7 +44,11 @@ if ! docker build -t "$IMAGE" "$HOST_SRC/os"; then
 fi
 
 # The container has no git, so name the image from the host's checkout.
-VERSION="${RAMTECH_VERSION:-$(git -C "$SELF" describe --tags --always --dirty 2>/dev/null || echo dev)}"
+# $SELF, not $HOST_SRC, would be the natural argument here — but git is a native
+# Windows binary and MSYS_NO_PATHCONV (exported above so docker sees container
+# paths intact) also stops Git Bash rewriting /c/... into C:/... for it. It then
+# fails to find the repo and every image built on Windows is stamped "dev".
+VERSION="${RAMTECH_VERSION:-$(git -C "$HOST_SRC" describe --tags --always --dirty 2>/dev/null || echo dev)}"
 echo "==> Version: $VERSION"
 
 if [ "$CLEAN" = 1 ]; then

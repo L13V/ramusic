@@ -202,7 +202,21 @@ async function getJam(env) {
   return out;
 }
 
-async function getJamUncached(env) {
+/**
+ * Re-read the Jam session RIGHT NOW, skipping both the 4s poll cache and the
+ * idle backoff. Used by the /j QR redirect: the sticky cache happily serves a
+ * join token for 10 minutes after the session behind it died, which is what
+ * made "leave, then scan again" dead-end. `fresh` says whether a live session
+ * was actually read (vs. the sticky fallback).
+ */
+export async function refreshJam(env) {
+  const out = await getJamUncached(env, { force: true });
+  // A failed probe must not blank the TV's Jam panel — only publish a win.
+  if (out.fresh && out.joinUrl) jamCache = { data: out, ts: Date.now() };
+  return out;
+}
+
+async function getJamUncached(env, { force = false } = {}) {
   const debug = String(env.JAM_DEBUG).toLowerCase() === 'true';
   const out = { joinUrl: null, members: [], contributors: {} };
   if (debug) out.debug = { attempts: [], deviceId: webDeviceId };
@@ -226,7 +240,8 @@ async function getJamUncached(env) {
   const stickyFresh = lastJam.joinUrl && Date.now() - lastJam.seen < JAM_STICKY_MS;
   // While idle (no session lately) throttle the create attempts. But once a
   // Jam is up we re-check every poll so members/contributors stay live.
-  if (!stickyFresh && Date.now() < jamIdleUntil) return out;
+  // force = a phone is scanning the QR right now; never make it wait out the backoff.
+  if (!force && !stickyFresh && Date.now() < jamIdleUntil) return out;
 
   const headers = { Authorization: `Bearer ${tok}`, 'User-Agent': UA, Accept: 'application/json' };
 
@@ -286,6 +301,7 @@ async function getJamUncached(env) {
     return out;
   }
 
+  out.fresh = true; // a live session object came back, not the sticky cache
   out.joinUrl = pickJoinUrl(session);
   if (debug && !out.joinUrl) out.debug.sessionKeys = Object.keys(session);
 

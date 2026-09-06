@@ -1,4 +1,4 @@
-# Read-only report on why a disk will not open. Opens handles and closes them;
+﻿# Read-only report on why a disk will not open. Opens handles and closes them;
 # writes nothing, changes nothing.
 param([int]$Number = -1)
 

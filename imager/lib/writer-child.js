@@ -18,6 +18,7 @@ const winProbe = require('./win-probe');
 
 const SECTOR = 512;
 const CHUNK = 4 * 1024 * 1024;
+const FOUR_GIB = 4294967296;
 
 const args = parseArgs(process.argv.slice(2));
 const progressPath = args.progress;
@@ -80,6 +81,73 @@ function advice(err) {
     default:
       return msg;
   }
+}
+
+// ── How big the image really is ──────────────────────────────
+// The progress bar needs a denominator in the units the write actually happens
+// in, and for a .gz that is not the size of the .gz. A RAMTECH image ends in a
+// 4 GiB persistence partition that is empty, so it costs ~9 MB of the .gz and
+// 4 GiB of the write: measured against the compressed file the bar reaches 100%
+// with 82% of the write still to go, then sits there for minutes looking hung.
+//
+// gzip records the uncompressed size in its last four bytes, but only modulo
+// 4 GiB — and this image is over that. The image's own partition table says
+// roughly how big the disk it describes is, which is all that is needed to
+// recover the multiple of 4 GiB the footer dropped.
+
+/** Decompress just enough of the front of the image to hold its boot sectors. */
+function gunzipHead(src) {
+  try {
+    const fd = fs.openSync(src, 'r');
+    let raw = Buffer.alloc(256 * 1024);
+    try { raw = raw.subarray(0, fs.readSync(fd, raw, 0, raw.length, 0)); }
+    finally { fs.closeSync(fd); }
+    // Z_SYNC_FLUSH: the input is a deliberately truncated member, and without it
+    // zlib treats the missing tail as a corrupt stream instead of a short read.
+    return zlib.gunzipSync(raw, { finishFlush: zlib.constants.Z_SYNC_FLUSH });
+  } catch { return null; }
+}
+
+/** The size of the disk an image's partition table describes, or 0. */
+function declaredDiskSize(head) {
+  if (!head || head.length < 512 || head.readUInt16LE(510) !== 0xaa55) return 0;
+  let end = 0;
+  for (let i = 0; i < 4; i++) {
+    const e = 446 + i * 16;
+    const start = head.readUInt32LE(e + 8);
+    const count = head.readUInt32LE(e + 12);
+    // 0xffffffff is what a protective MBR puts here when the real size does not
+    // fit the field; it describes nothing.
+    if (count && count !== 0xffffffff) end = Math.max(end, (start + count) * SECTOR);
+  }
+  // A GPT disk records its own last sector. Taken as a maximum rather than a
+  // preference because an isohybrid image carries a stale one, left pointing at
+  // the end of the ISO it was grown from.
+  if (head.length >= 1024 && head.toString('latin1', 512, 520) === 'EFI PART') {
+    const alt = Number(head.readBigUInt64LE(544));
+    if (Number.isSafeInteger(alt) && alt > 0) end = Math.max(end, (alt + 1) * SECTOR);
+  }
+  return end;
+}
+
+/** Bytes this image will occupy once written. Falls back to the footer's own
+ *  value, which the writer corrects as it goes if it turns out to be short. */
+function uncompressedSize(src) {
+  const size = fs.statSync(src).size;
+  if (!src.endsWith('.gz')) return size;
+  let isize;
+  try {
+    const fd = fs.openSync(src, 'r');
+    try {
+      const tail = Buffer.alloc(4);
+      fs.readSync(fd, tail, 0, 4, size - 4);
+      isize = tail.readUInt32LE(0);
+    } finally { fs.closeSync(fd); }
+  } catch { return size; }
+
+  const hint = declaredDiskSize(gunzipHead(src));
+  const wraps = hint > isize ? Math.max(0, Math.round((hint - isize) / FOUR_GIB)) : 0;
+  return isize + wraps * FOUR_GIB;
 }
 
 function parseArgs(argv) {
@@ -292,9 +360,9 @@ async function main() {
       : 'The writer is not running as root, so the device cannot be opened.');
   }
 
-  const compressedTotal = fs.statSync(src).size;
+  let imageTotal = uncompressedSize(src);
 
-  report({ phase: 'preparing', written: 0, total: compressedTotal, done: false });
+  report({ phase: 'preparing', written: 0, total: imageTotal, done: false });
   unmount(dest);
 
   // On Windows, raw physical devices (\\.\PHYSICALDRIVE<n>) cannot be opened via
@@ -310,6 +378,7 @@ async function main() {
       '-Src', src,
       '-Dest', dest,
       '-Progress', progressPath,
+      '-Total', String(imageTotal),
     ];
     if (verify) psArgs.push('-Verify');
 
@@ -342,14 +411,12 @@ async function main() {
   const hash = crypto.createHash('sha256');
   let offset = 0;              // bytes written to the device (may include a padded tail)
   let imageLen = 0;            // bytes of actual image, i.e. what the hash covers
-  let readCompressed = 0;      // bytes consumed from the .gz, for the progress bar
   let pending = Buffer.alloc(0);
   const started = Date.now();
   let lastReport = 0;
 
   const isGz = src.endsWith('.gz');
   const source = fs.createReadStream(src, { highWaterMark: CHUNK });
-  source.on('data', (b) => { readCompressed += b.length; });
   const dataStream = isGz ? source.pipe(zlib.createGunzip({ chunkSize: CHUNK })) : source;
 
   const flush = (buf) => {
@@ -371,8 +438,11 @@ async function main() {
       const now = Date.now();
       if (now - lastReport > 250) {
         lastReport = now;
+        // The footer only pinned the size modulo 4 GiB; if the estimate was
+        // short, recover the missing multiple rather than run past the end.
+        while (imageLen > imageTotal) imageTotal += FOUR_GIB;
         report({
-          phase: 'writing', written: readCompressed, total: compressedTotal, done: false,
+          phase: 'writing', written: imageLen, total: imageTotal, done: false,
           bytesOnDevice: offset, elapsed: (now - started) / 1000,
         });
       }
@@ -383,6 +453,10 @@ async function main() {
       pending.copy(padded);
       flush(padded);
     }
+    // Anything the kernel still has cached drains here, which on a slow stick
+    // takes long enough that a bar frozen at 100% reads as a hang.
+    report({ phase: 'flushing', written: imageLen, total: imageLen, done: false,
+      bytesOnDevice: offset, elapsed: (Date.now() - started) / 1000 });
     fs.fsyncSync(fd);
     // Verify against the image's own length, not the zero-padded write length.
     const imageBytes = imageLen;
@@ -426,7 +500,7 @@ async function main() {
     }
 
     settle(dest);
-    report({ phase: 'done', written: compressedTotal, total: compressedTotal, done: true, bytesOnDevice: imageBytes });
+    report({ phase: 'done', written: imageBytes, total: imageBytes, done: true, bytesOnDevice: imageBytes });
   } catch (err) {
     try { fs.closeSync(fd); } catch {}
     throw err;

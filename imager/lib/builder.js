@@ -31,15 +31,40 @@ function findLocalBuild() {
 
 function checkDocker() {
   return new Promise((resolve) => {
-    execFile('docker', ['info'], { windowsHide: true, timeout: 5000 }, (err) => {
-      if (err) {
-        resolve({
+    // Docker Desktop does not have to be running when the imager starts, and on a
+    // machine where it is not set to start with Windows it usually is not. Two
+    // things follow: an engine that is still coming up takes far longer than five
+    // seconds to answer, and the reason it did not answer has to survive to the
+    // screen. Telling someone who has Docker Desktop installed that it is "not
+    // installed" is how this ends up looking like an app that cannot see Docker.
+    execFile('docker', ['info'], { windowsHide: true, timeout: 30000 }, (err, stdout, stderr) => {
+      if (!err) return resolve({ available: true });
+
+      if (err.code === 'ENOENT') {
+        return resolve({
           available: false,
-          error: 'Docker is not running or not installed. Please start Docker Desktop to build RAMTECH OS locally.',
+          error: 'Docker was not found on this computer. Install Docker Desktop to build RAMTECH OS from source.',
         });
-      } else {
-        resolve({ available: true });
       }
+      if (err.killed) {
+        return resolve({
+          available: false,
+          error: 'Docker did not answer within 30 seconds — it is probably still starting. Wait for Docker Desktop to say "Engine running", then choose Check again.',
+        });
+      }
+      // docker's own complaint ("error during connect: … The system cannot find
+      // the file specified") names the problem better than anything guessed here.
+      const detail = String(stderr || '')
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter((l) => l && !/^WARNING/i.test(l))
+        .slice(-2)
+        .join(' ');
+      resolve({
+        available: false,
+        error: 'Docker is installed but its engine did not answer. Start Docker Desktop, wait for "Engine running", then choose Check again.'
+          + (detail ? `\n\n${detail}` : ''),
+      });
     });
   });
 }

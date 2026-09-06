@@ -1,10 +1,11 @@
-# Win32 Native Raw Disk Writer for RAMTECH Imager
+﻿# Win32 Native Raw Disk Writer for RAMTECH Imager
 # Writes raw / gzipped disk images directly to physical drives or files
 # using Win32 CreateFileW, WriteFile, ReadFile, and FlushFileBuffers.
 param(
     [Parameter(Mandatory=$true)][string]$Src,
     [Parameter(Mandatory=$true)][string]$Dest,
     [Parameter(Mandatory=$true)][string]$Progress,
+    [long]$Total = 0,
     [switch]$Verify
 )
 
@@ -14,8 +15,9 @@ $csharpCode = @'
 using System;
 using System.IO;
 using System.IO.Compression;
-using System.Security.Cryptography;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using System.Threading;
 using Microsoft.Win32.SafeHandles;
 
 public static class WinRawDiskWriter {
@@ -73,11 +75,22 @@ public static class WinRawDiskWriter {
     private const uint OPEN_EXISTING = 3;
     private const uint OPEN_ALWAYS = 4;
     private const uint FILE_ATTRIBUTE_NORMAL = 0x80;
+    // Unbuffered, but NOT write-through. Unbuffered keeps the Windows file cache
+    // out of the way, so WriteFile waits for the stick and progress is the
+    // stick's real pace. Write-through on top of it additionally asks the drive
+    // to flush its own cache on every call, which on USB mass storage costs more
+    // throughput than anything else in this file.
+    private const uint FILE_FLAG_NO_BUFFERING = 0x20000000;
     private const uint FSCTL_ALLOW_EXTENDED_DASD_IO = 0x00090083;
     private const uint FSCTL_LOCK_VOLUME = 0x00090018;
     private const uint FSCTL_DISMOUNT_VOLUME = 0x00090020;
     private const int SECTOR_SIZE = 512;
+    // Unbuffered I/O has to be aligned to the drive physical sector, which is
+    // 512 on most sticks and 4096 on some. 4096 is a multiple of both, so one
+    // number is correct for either without asking the driver which it is.
+    private const int ALIGN = 4096;
     private const int CHUNK_SIZE = 4 * 1024 * 1024; // 4 MB
+    private const int QUEUE_DEPTH = 4;
 
     public static string ExplainError(int code, string context) {
         string advice;
@@ -142,7 +155,126 @@ public static class WinRawDiskWriter {
         }
     }
 
-    public static void Write(string srcPath, string destPath, string progressPath, bool verify) {
+    // ── Buffers ──────────────────────────────────────────────────
+    // Unbuffered I/O needs the buffer address sector-aligned as well as the
+    // lengths and offsets, and the GC pins an array wherever it already sits —
+    // so each buffer is over-allocated by one alignment unit and an aligned
+    // window is taken inside it.
+    private class Chunk {
+        public byte[] Data;
+        public int Off;
+        public IntPtr Ptr;
+        public int Len;
+        private GCHandle pin;
+
+        public Chunk() {
+            Data = new byte[CHUNK_SIZE + ALIGN];
+            pin = GCHandle.Alloc(Data, GCHandleType.Pinned);
+            long b = pin.AddrOfPinnedObject().ToInt64();
+            Off = (int)((ALIGN - (b % ALIGN)) % ALIGN);
+            Ptr = new IntPtr(b + Off);
+        }
+
+        public void Free() { if (pin.IsAllocated) pin.Free(); }
+    }
+
+    private class Pipe {
+        private readonly Queue<Chunk> q = new Queue<Chunk>();
+        public void Put(Chunk c) { lock (q) { q.Enqueue(c); Monitor.Pulse(q); } }
+        public Chunk Take() {
+            lock (q) {
+                while (q.Count == 0) Monitor.Wait(q);
+                return q.Dequeue();
+            }
+        }
+    }
+
+    // Decompression runs on its own thread so it overlaps the device write
+    // instead of taking turns with it. The stick is by far the slower of the
+    // two, so overlapping makes the decompression cost nothing at all.
+    private class Pump {
+        public Stream Source;
+        public Pipe Free = new Pipe();
+        public Pipe Full = new Pipe();
+        public Exception Error;
+
+        public void Run() {
+            try {
+                while (true) {
+                    Chunk c = Free.Take();
+                    int filled = 0;
+                    while (filled < CHUNK_SIZE) {
+                        int n = Source.Read(c.Data, c.Off + filled, CHUNK_SIZE - filled);
+                        if (n <= 0) break;
+                        filled += n;
+                    }
+                    c.Len = filled;
+                    if (filled == 0) { Full.Put(null); return; }
+                    Full.Put(c);
+                }
+            } catch (Exception ex) {
+                Error = ex;
+                Full.Put(null);
+            }
+        }
+    }
+
+    /// A 64-bit FNV-1a over the block, taken eight bytes at a time. Enough to
+    /// name the first block that came back wrong, which is what tells a worn
+    /// stick apart from one that lies about its capacity.
+    private static ulong Fingerprint(byte[] b, int off, int len) {
+        ulong h = 14695981039346656037UL;
+        int i = off;
+        int wordEnd = off + (len & ~7);
+        for (; i < wordEnd; i += 8) {
+            h = (h ^ BitConverter.ToUInt64(b, i)) * 1099511628211UL;
+        }
+        for (; i < off + len; i++) {
+            h = (h ^ b[i]) * 1099511628211UL;
+        }
+        return h;
+    }
+
+    private static void Seek(SafeFileHandle h, long pos) {
+        long dummy;
+        if (!SetFilePointerEx(h, pos, out dummy, 0 /* FILE_BEGIN */)) {
+            throw new Exception(ExplainError(Marshal.GetLastWin32Error(), "Seek to " + pos + " failed"));
+        }
+    }
+
+    private static int PaddedLength(int len, int align, bool isDevice) {
+        if (!isDevice) return len;
+        int rem = len % align;
+        return rem == 0 ? len : len + (align - rem);
+    }
+
+    private static void WriteBlock(SafeFileHandle h, Chunk c, int count, long atOffset) {
+        int done = 0;
+        while (done < count) {
+            IntPtr slice = new IntPtr(c.Ptr.ToInt64() + done);
+            uint written;
+            if (!WriteFile(h, slice, (uint)(count - done), out written, IntPtr.Zero) || written == 0) {
+                throw new Exception(ExplainError(Marshal.GetLastWin32Error(),
+                    "WriteFile failed at offset " + (atOffset + done)));
+            }
+            done += (int)written;
+        }
+    }
+
+    private static void ReadBlock(SafeFileHandle h, Chunk c, int count, long atOffset) {
+        int done = 0;
+        while (done < count) {
+            IntPtr slice = new IntPtr(c.Ptr.ToInt64() + done);
+            uint read;
+            if (!ReadFile(h, slice, (uint)(count - done), out read, IntPtr.Zero) || read == 0) {
+                throw new Exception(ExplainError(Marshal.GetLastWin32Error(),
+                    "ReadFile failed at offset " + (atOffset + done)));
+            }
+            done += (int)read;
+        }
+    }
+
+    public static void Write(string srcPath, string destPath, string progressPath, bool verify, long imageTotal) {
         if (!File.Exists(srcPath)) {
             throw new FileNotFoundException("Image file not found: " + srcPath);
         }
@@ -152,15 +284,24 @@ public static class WinRawDiskWriter {
         bool isDevice = destPath.StartsWith(@"\\.\PHYSICALDRIVE", StringComparison.OrdinalIgnoreCase) ||
                         destPath.StartsWith(@"\\?\PHYSICALDRIVE", StringComparison.OrdinalIgnoreCase);
 
-        Report(progressPath, "preparing", 0, compressedTotal, false, 0, 0, null);
+        // Progress is counted in bytes written to the stick, not bytes read from
+        // the .gz: an empty 4 GiB persistence partition is ~9 MB of the one and
+        // 4 GiB of the other, so the compressed file makes the bar hit 100% with
+        // most of the write still to come. The parent works the real size out.
+        long progressTotal = imageTotal > 0 ? imageTotal : compressedTotal;
+
+        Report(progressPath, "preparing", 0, progressTotal, false, 0, 0, null);
 
         SafeFileHandle hDest = null;
         int lastError = 0;
+        bool unbuffered = isDevice;
         DateTime deadline = DateTime.UtcNow.AddSeconds(isDevice ? 30 : 5);
 
         while (DateTime.UtcNow < deadline) {
             uint disposition = isDevice ? OPEN_EXISTING : OPEN_ALWAYS;
-            uint flags = isDevice ? 0 : FILE_ATTRIBUTE_NORMAL;
+            uint flags = isDevice
+                ? (unbuffered ? FILE_FLAG_NO_BUFFERING : 0)
+                : FILE_ATTRIBUTE_NORMAL;
             hDest = CreateFileW(
                 destPath,
                 GENERIC_READ | GENERIC_WRITE,
@@ -176,7 +317,13 @@ public static class WinRawDiskWriter {
             }
 
             lastError = Marshal.GetLastWin32Error();
-            Report(progressPath, "preparing", 0, compressedTotal, false, 0, 0, null);
+            // A driver that will not take unbuffered I/O rejects the flags, not the
+            // disk: retry cached rather than failing the write outright.
+            if (unbuffered && (lastError == 87 || lastError == 1)) {
+                unbuffered = false;
+                continue;
+            }
+            Report(progressPath, "preparing", 0, progressTotal, false, 0, 0, null);
             System.Threading.Thread.Sleep(500);
         }
 
@@ -192,139 +339,177 @@ public static class WinRawDiskWriter {
                 DeviceIoControl(hDest, FSCTL_DISMOUNT_VOLUME, IntPtr.Zero, 0, IntPtr.Zero, 0, out dummy, IntPtr.Zero);
             }
 
-            byte[] expectedHash;
-            long totalImageBytes = 0;
-            long totalBytesWritten = 0;
+            // A cached handle only needs whole sectors; unbuffered needs the full
+            // alignment. Aligning always costs nothing, so one path covers both.
+            int align = unbuffered ? ALIGN : SECTOR_SIZE;
+
+            var fps = new List<ulong>();   // fingerprint of each block, in image order
+            var lens = new List<int>();    // and how many bytes of it are real
+            Chunk head = null;             // block 0, held back — see below
+            long imageBytes = 0;
+            long onDevice = 0;
             var sw = System.Diagnostics.Stopwatch.StartNew();
             var lastReport = System.Diagnostics.Stopwatch.StartNew();
 
-            using (FileStream srcFile = new FileStream(srcPath, FileMode.Open, FileAccess.Read, FileShare.Read, 1024 * 1024))
-            using (Stream uncompressed = isGz ? (Stream)new GZipStream(srcFile, CompressionMode.Decompress) : (Stream)srcFile)
-            using (SHA256 sha256 = SHA256.Create()) {
-                byte[] buffer = new byte[CHUNK_SIZE];
-                GCHandle pin = GCHandle.Alloc(buffer, GCHandleType.Pinned);
-                try {
-                    IntPtr bufPtr = pin.AddrOfPinnedObject();
+            var pool = new List<Chunk>();
+            FileStream srcFile = null;
+            Stream uncompressed = null;
+            try {
+                srcFile = new FileStream(srcPath, FileMode.Open, FileAccess.Read, FileShare.Read, 1024 * 1024);
+                uncompressed = isGz ? (Stream)new GZipStream(srcFile, CompressionMode.Decompress) : (Stream)srcFile;
 
-                    while (true) {
-                        int chunkFilled = 0;
-                        while (chunkFilled < CHUNK_SIZE) {
-                            int n = uncompressed.Read(buffer, chunkFilled, CHUNK_SIZE - chunkFilled);
-                            if (n <= 0) break;
-                            chunkFilled += n;
-                        }
+                var pump = new Pump();
+                pump.Source = uncompressed;
+                for (int i = 0; i < QUEUE_DEPTH; i++) {
+                    Chunk c = new Chunk();
+                    pool.Add(c);
+                    pump.Free.Put(c);
+                }
+                Thread producer = new Thread(pump.Run);
+                producer.IsBackground = true;
+                producer.Start();
 
-                        if (chunkFilled == 0) {
-                            break;
-                        }
+                // The first block carries the partition table. Windows watches
+                // removable media for a layout it recognises and will mount — and
+                // write to — any volume that appears, while this write is still
+                // running. That is what made verification come back with bytes
+                // that were never written. Holding block 0 back until everything
+                // else is on the stick (and verified) means there is nothing for
+                // Windows to notice until the drive is finished.
+                Seek(hDest, CHUNK_SIZE);
 
-                        sha256.TransformBlock(buffer, 0, chunkFilled, null, 0);
-                        totalImageBytes += chunkFilled;
+                int index = 0;
+                for (;;) {
+                    Chunk c = pump.Full.Take();
+                    if (c == null) break;
 
-                        int bytesToWrite = chunkFilled;
-                        if (isDevice) {
-                            int rem = bytesToWrite % SECTOR_SIZE;
-                            if (rem != 0) {
-                                int pad = SECTOR_SIZE - rem;
-                                Array.Clear(buffer, bytesToWrite, pad);
-                                bytesToWrite += pad;
-                            }
-                        }
+                    fps.Add(Fingerprint(c.Data, c.Off, c.Len));
+                    lens.Add(c.Len);
+                    imageBytes += c.Len;
 
-                        int writtenSoFar = 0;
-                        while (writtenSoFar < bytesToWrite) {
-                            IntPtr slicePtr = new IntPtr(bufPtr.ToInt64() + writtenSoFar);
-                            uint countToWrite = (uint)(bytesToWrite - writtenSoFar);
-                            uint written;
-                            if (!WriteFile(hDest, slicePtr, countToWrite, out written, IntPtr.Zero) || written == 0) {
-                                int err = Marshal.GetLastWin32Error();
-                                throw new Exception(ExplainError(err, "WriteFile failed at offset " + (totalBytesWritten + writtenSoFar)));
-                            }
-                            writtenSoFar += (int)written;
-                        }
-                        totalBytesWritten += bytesToWrite;
-
-                        if (lastReport.ElapsedMilliseconds > 250) {
-                            lastReport.Restart();
-                            long readCompressed = isGz ? srcFile.Position : totalImageBytes;
-                            Report(progressPath, "writing", readCompressed, compressedTotal, false, totalBytesWritten, sw.Elapsed.TotalSeconds, null);
-                        }
+                    if (index == 0) {
+                        head = c;   // kept out of the pool until the very end
+                    } else {
+                        int count = PaddedLength(c.Len, align, isDevice);
+                        if (count > c.Len) Array.Clear(c.Data, c.Off + c.Len, count - c.Len);
+                        WriteBlock(hDest, c, count, onDevice + CHUNK_SIZE);
+                        onDevice += count;
+                        pump.Free.Put(c);
                     }
-                } finally {
-                    pin.Free();
-                }
+                    index++;
 
-                sha256.TransformFinalBlock(new byte[0], 0, 0);
-                expectedHash = sha256.Hash;
-            }
-
-            FlushFileBuffers(hDest);
-
-            if (verify) {
-                Report(progressPath, "verifying", 0, totalImageBytes, false, totalBytesWritten, sw.Elapsed.TotalSeconds, null);
-
-                long newPos;
-                if (!SetFilePointerEx(hDest, 0, out newPos, 0 /* FILE_BEGIN */)) {
-                    int err = Marshal.GetLastWin32Error();
-                    throw new Exception(ExplainError(err, "SetFilePointerEx rewind failed"));
-                }
-
-                using (SHA256 verifySha = SHA256.Create()) {
-                    byte[] vBuf = new byte[CHUNK_SIZE];
-                    GCHandle vPin = GCHandle.Alloc(vBuf, GCHandleType.Pinned);
-                    try {
-                        IntPtr vBufPtr = vPin.AddrOfPinnedObject();
-                        long pos = 0;
+                    if (lastReport.ElapsedMilliseconds > 250) {
                         lastReport.Restart();
-
-                        while (pos < totalImageBytes) {
-                            long wantLong = Math.Min((long)CHUNK_SIZE, totalImageBytes - pos);
-                            int want = (int)wantLong;
-                            int aligned = isDevice ? (((want + SECTOR_SIZE - 1) / SECTOR_SIZE) * SECTOR_SIZE) : want;
-
-                            int got = 0;
-                            while (got < aligned) {
-                                IntPtr slicePtr = new IntPtr(vBufPtr.ToInt64() + got);
-                                uint countToRead = (uint)(aligned - got);
-                                uint read;
-                                if (!ReadFile(hDest, slicePtr, countToRead, out read, IntPtr.Zero) || read == 0) {
-                                    int err = Marshal.GetLastWin32Error();
-                                    throw new Exception(ExplainError(err, "ReadFile failed at offset " + (pos + got)));
-                                }
-                                got += (int)read;
-                            }
-
-                            verifySha.TransformBlock(vBuf, 0, want, null, 0);
-                            pos += want;
-
-                            if (lastReport.ElapsedMilliseconds > 250) {
-                                lastReport.Restart();
-                                Report(progressPath, "verifying", pos, totalImageBytes, false, totalBytesWritten, sw.Elapsed.TotalSeconds, null);
-                            }
-                        }
-                    } finally {
-                        vPin.Free();
-                    }
-
-                    verifySha.TransformFinalBlock(new byte[0], 0, 0);
-                    byte[] actualHash = verifySha.Hash;
-
-                    if (BitConverter.ToString(expectedHash) != BitConverter.ToString(actualHash)) {
-                        throw new Exception("Verification failed — the stick did not read back what was written. Try another USB port or another stick.");
+                        // The gzip footer only pinned the size modulo 4 GiB; if the
+                        // estimate was short, recover the missing multiple rather
+                        // than let the bar run past the end.
+                        while (imageBytes > progressTotal) progressTotal += 4294967296L;
+                        Report(progressPath, "writing", imageBytes, progressTotal, false, onDevice, sw.Elapsed.TotalSeconds, null);
                     }
                 }
+
+                producer.Join();
+                if (pump.Error != null) throw pump.Error;
+                if (head == null) throw new Exception("The image is empty.");
+            } finally {
+                if (uncompressed != null) uncompressed.Dispose();
+                if (srcFile != null) srcFile.Dispose();
             }
 
-            FlushFileBuffers(hDest);
-            Report(progressPath, "done", compressedTotal, compressedTotal, true, totalImageBytes, sw.Elapsed.TotalSeconds, null);
+            try {
+                Report(progressPath, "flushing", imageBytes, imageBytes, false, onDevice, sw.Elapsed.TotalSeconds, null);
+                FlushFileBuffers(hDest);
+
+                Chunk scratch = pool[0] == head ? pool[1] : pool[0];
+
+                if (verify) {
+                    VerifyRange(hDest, scratch, fps, lens, 1, CHUNK_SIZE, align, isDevice,
+                        progressPath, imageBytes, onDevice, sw, lastReport);
+                }
+
+                // Everything else is on the stick and checked; now make it bootable.
+                Seek(hDest, 0);
+                int headCount = PaddedLength(head.Len, align, isDevice);
+                if (headCount > head.Len) Array.Clear(head.Data, head.Off + head.Len, headCount - head.Len);
+                WriteBlock(hDest, head, headCount, 0);
+                onDevice += headCount;
+                FlushFileBuffers(hDest);
+
+                if (verify) {
+                    VerifyRange(hDest, scratch, fps, lens, 0, 0, align, isDevice,
+                        progressPath, imageBytes, onDevice, sw, lastReport);
+                }
+
+                Report(progressPath, "done", imageBytes, imageBytes, true, imageBytes, sw.Elapsed.TotalSeconds, null);
+            } finally {
+                for (int i = 0; i < pool.Count; i++) pool[i].Free();
+            }
         }
+    }
+
+    /// Read blocks back and compare fingerprints. `from` is the first block index
+    /// to check and `at` the byte offset it lives at; the run continues to the end
+    /// of the image, or stops after one block when checking the held-back head.
+    private static void VerifyRange(SafeFileHandle h, Chunk buf, List<ulong> fps, List<int> lens,
+                                    int from, long at, int align, bool isDevice,
+                                    string progressPath, long imageBytes, long onDevice,
+                                    System.Diagnostics.Stopwatch sw, System.Diagnostics.Stopwatch lastReport) {
+        int last = from == 0 ? 0 : fps.Count - 1;
+        long firstBad = -1;
+        int badBlocks = 0;
+        long checkedBytes = 0;
+
+        Seek(h, at);
+        // Only the body pass opens the phase. The head is one block checked at
+        // the very end, and announcing it would snap a full bar back to zero.
+        if (from > 0) {
+            Report(progressPath, "verifying", 0, imageBytes, false, onDevice, sw.Elapsed.TotalSeconds, null);
+        }
+
+        for (int i = from; i <= last; i++) {
+            int want = lens[i];
+            int count = PaddedLength(want, align, isDevice);
+            long offset = at + checkedBytes;
+            ReadBlock(h, buf, count, offset);
+            if (Fingerprint(buf.Data, buf.Off, want) != fps[i]) {
+                badBlocks++;
+                if (firstBad < 0) firstBad = (long)i * CHUNK_SIZE;
+            }
+            checkedBytes += count;
+
+            if (from > 0 && lastReport.ElapsedMilliseconds > 250) {
+                lastReport.Restart();
+                Report(progressPath, "verifying", at + checkedBytes, imageBytes, false, onDevice, sw.Elapsed.TotalSeconds, null);
+            }
+        }
+
+        if (badBlocks == 0) return;
+
+        int checkedBlocks = last - from + 1;
+        string cause;
+        if (checkedBlocks == 1) {
+            // Only the partition-table block is checked on its own, and it is the
+            // last thing written, so nothing has had a chance to overwrite it.
+            cause = "That block is the partition table, written last of all. A stick that fails only here is refusing writes rather than losing them — try a different stick.";
+        } else {
+            // A stick that claims more capacity than it has takes the whole write
+            // and then hands back rubbish for everything past its real end, so the
+            // damage runs to the end in one piece. Wear is scattered.
+            long runToEnd = last - (firstBad / CHUNK_SIZE) + 1;
+            cause = badBlocks == runToEnd && badBlocks > 1
+                ? "Everything from that point on is wrong, which is what a stick that reports more capacity than it really has does. Use a different stick, from a brand you recognise."
+                : "The differences are scattered rather than in one run, which points at worn-out flash. Try a different USB port — one on the PC itself rather than a hub — and if it fails the same way, use another stick.";
+        }
+        throw new Exception("Verification failed — the stick did not read back what was written.\n\n"
+            + "The first difference is " + (firstBad / (1024 * 1024)) + " MB into the image; "
+            + badBlocks + " of " + checkedBlocks + " blocks read back wrong. " + cause);
     }
 }
 '@
 
 try {
     Add-Type -TypeDefinition $csharpCode
-    [WinRawDiskWriter]::Write($Src, $Dest, $Progress, [bool]$Verify)
+    [WinRawDiskWriter]::Write($Src, $Dest, $Progress, [bool]$Verify, $Total)
     exit 0
 } catch {
     $err = $_.Exception.Message
